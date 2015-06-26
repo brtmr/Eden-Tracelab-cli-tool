@@ -57,12 +57,13 @@ library
   -- other-extensions:    
   
   -- Other library packages from which modules are imported.
-  build-depends:       base >=4.8 && <4.9,
+  build-depends:       base >=4.7 && <4.9,
                        binary,
                        bytestring,
                        ghc-events-parallel,
                        containers >= 0.2 && < 0.6,
-                       mtl
+                       mtl,
+                       lens
   
   -- Directories containing source files.
   hs-source-dirs:      src

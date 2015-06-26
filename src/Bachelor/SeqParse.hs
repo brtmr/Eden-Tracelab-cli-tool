@@ -1,40 +1,86 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Bachelor.SeqParse where
 
 #define EVENTLOG_CONSTANTS_ONLY
 #include "EventLogFormat.h"
 
-import Data.Binary.Get
-import Data.ByteString.Lazy
-import GHC.RTS.Events
-
--- for parsers
-import Data.IntMap (IntMap)
-import qualified Data.IntMap as M
-
 import Bachelor.SeqParse.PreParse
+import Control.Exception
+import Control.Monad.Except
+import Data.Binary.Get
+import Data.ByteString.Lazy as LB (readFile, ByteString)
+import Data.IntMap (IntMap)
+import GHC.Arr
+import GHC.RTS.EventParserUtils
+import GHC.RTS.EventTypes
+import GHC.RTS.Events
+import qualified Data.IntMap as M
+import Control.Monad.State
+import Control.Lens
 
+data RTSState = RTSState
 data ParserState = ParserState {
-    bs           :: ByteString,
-    bsOffset     :: ByteOffset,
-    rtsState      :: RTSState
+    _p_bs         :: LB.ByteString,
+    _p_bsOffset     :: ByteOffset,
+    _p_parsers      :: EventParsers,
+    _p_rtsState      :: RTSState
     }
 
--- | describes the current state of the RTS at the current moment in time
-data RTSState = RTSState
+$(makeLenses ''ParserState)
 
-{- | consumes a lazy bytestring and returns a new ParserState that
- - has already consumed the header and contains the correct EventParsers
- -
+instance Show ParserState where
+    show p = "Parser is " ++ (show $ p ^. p_bsOffset) ++ " bytes in."
+
+-- | describes the current state of the RTS at the current moment in time
+
+filename = "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"
+
+-- |
+-- |
+parse :: Int -> IO ()
+parse n = do
+    bs <- LB.readFile filename
+    let pstate = getParsers bs
+        (datb,pstate') = runGetOrFailHard getWord32be pstate
+    if (datb/=EVENT_DATA_BEGIN)
+        then error "Data begin section not found"
+        else do parseEvents n pstate'
+
+-- |
+-- |
+parseEvents :: Int -> ParserState -> IO()
+parseEvents n pstate' = undefined
+
+-- | executes runGetOrFail and updates the state of the parser
+-- | produces an error in case the parsing failes.
+runGetOrFailHard :: Get a -> ParserState -> (a, ParserState)
+runGetOrFailHard g pstate = case (runGetOrFail g (_p_bs pstate)) of
+        (Left  (bs',offset,err)) -> error err
+        (Right (bs',offset,res)) -> (res,
+            p_bs .~ bs' $ (p_bsOffset %~ (+offset) $ pstate)
+            ) -- add the previous offsets and set the new bytestring
+
+{-
+singleEvent :: ParserState -> (Maybe Event, ParserState)
+singleEvent pstate = let getEvent' = getEvent (pstate ^. p_parsers)
+    in runGetOrFailHard getEvent' pstate
+-}
+-- | consumes a lazy bytestring and returns a new ParserState that
+-- | has already consumed the header and contains the correct EventParsers
+getParsers :: ByteString -> ParserState
+getParsers bs = case (runGetOrFail getParsers' bs) of
+    (Left  (bs',offset,err)) -> error err
+    (Right (bs',offset,res)) -> case res of
+        (Left err) -> error err
+        (Right par) -> ParserState bs' offset (EventParsers par) RTSState
+
+{-
  - the Header parsing is taken from the getEventLog-function
  - from ghc-events-parallel
-| -}
-
-getParsers :: ByteString -> IO ParserState
-getParsers bs = undefined
-
-getParsers' :: Get EventParsers
-getParsers' = do
+ -}
+getParsers' :: Get (Either String (GHC.Arr.Array Int (GetEvents EventInfo)))
+getParsers' = runExceptT $ do
     header <- getHeader
     let imap = M.fromList [ (fromIntegral (num t),t) | t <- eventTypes header]
         -- This test is complete, no-one has extended this event yet and all future
