@@ -1,5 +1,5 @@
 {-# LANGUAGE CPP #-}
-module Bachelor.SeqParse.PreParse (findBlocks) where
+module Bachelor.SeqParse.PreParse where
 
 {-
  - Pre-Parses an eventlog file and returns information about the
