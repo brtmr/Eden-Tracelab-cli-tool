@@ -10,16 +10,22 @@ module Bachelor.SeqParse.PreParse where
 #include "EventLogFormat.h"
 
 import Control.Monad (when)
+import Control.Monad.Except
+import Data.Binary.Get
+import Data.ByteString as B (unpack, ByteString)
+import Data.ByteString.Lazy as LB (readFile, ByteString, hGet)
+import Data.Char (chr)
 import Data.Int
 import Data.Word
-import Data.Binary.Get
-import Data.ByteString.Lazy as LB (readFile, ByteString, hGet)
-import Data.ByteString as B (unpack, ByteString)
-import Data.Char (chr)
-import GHC.RTS.Events
 import Debug.Trace
-import Control.Monad.Except
+import GHC.RTS.Events
 import System.IO
+import qualified Data.Foldable as F
+import qualified Data.HashMap.Strict as M
+
+-- | Contains skip actions for skipping event blocks belonging to
+-- | other caps.
+type SkipMap = M.HashMap ByteOffset Int
 
 -- | data type for block information
 data BlockInfo = BlockInfo {
@@ -27,21 +33,25 @@ data BlockInfo = BlockInfo {
     position :: ByteOffset, -- ^ the position this block occured
     starttime :: Word64, -- ^ starttime of the block in ns
     endtime :: Word64,    -- ^ endtime of the block in ns
-    size :: Word32 -- ^ size of the eventblock in bytes
+    bSize :: Word32 -- ^ size of the eventblock in bytes
     } deriving Show
 
--- | This Parser only reads EventBlocks belonging to a single Capability
-getEventsByCap :: [BlockInfo] -> Int -> FilePath -> IO [Event]
-getEventsByCap info capN path = do
-    let info = filter (\b -> capNo b == capN) info
-    bs <- LB.readFile path
-    let eitherHeader = runGet
-            (runExceptT getHeader)
-            bs
-    case eitherHeader of
-        (Left  err) -> error err
-        (Right header) -> do
-            return []
+-- | Computes a HashMap with positions as keys and length of the
+-- | skip as values
+mkSkipMap :: Int -> [BlockInfo] -> SkipMap
+mkSkipMap n blockinfo = F.foldl' insertOtherBlock myBlockMap otherBlocks
+    where
+        myBlockMap    = F.foldl' insertMyBlock M.empty myBlocks
+        myBlocks      = filter (\x -> capNo x==n) blockinfo
+        otherBlocks   = filter (\x -> capNo x/=n) blockinfo
+        insertMyBlock m bi    = M.insert (position bi) (24) m
+                                       -- this is a block belonging to the cap
+                                       -- we are interested in. just skip
+                                       -- the block event
+        insertOtherBlock m bi = M.insert (position bi)
+                                       -- this is a block belonging to another
+                                       -- cap. skip it entirely.
+            (fromIntegral $ bSize bi) m
 
 -- | the main function for finding blocks.
 findBlocks :: LB.ByteString -> IO [BlockInfo]
@@ -116,8 +126,3 @@ skipEventTypeDeclarations = do
                 return marker
             else do
                 return $ error "EVENT_HET_END marker not found"
-testCase = do
-    bs <- LB.readFile "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"
-    blockInfo <- findBlocks bs
-    putStrLn $ show blockInfo
-    return ()
