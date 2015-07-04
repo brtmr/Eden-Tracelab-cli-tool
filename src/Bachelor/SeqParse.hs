@@ -39,6 +39,7 @@ instance Show ParserState where
 
 
 filename = "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"
+testRun = parse filename 1
 
 -- | parses a single *.eventlog file for the events of the capability n
 parse :: FilePath -- ^ Path to the *.Eventlog file.
@@ -53,7 +54,7 @@ parse file
         else do
             let skipMap =  mkSkipMap n blockinfo
                 (bs', offset, parsers) = getParsers bs
-                pstate = ParserState bs' offset parsers (RTSState []) n skipMap
+                pstate = ParserState bs' offset parsers startingState n skipMap
                 (datb,pstate') = runGetOrFailHard getWord32be pstate
             if (datb/=EVENT_DATA_BEGIN)
                 then error "Data begin section not found"
@@ -81,7 +82,7 @@ parseEvents pstate =
                     (EventBlock _ _ _) -> do
                         putStrLn $ show pstate''
                         error "EventBlock found!"
-                    _                  -> do
+                    e                  -> do
                         --putStrLn $ show e
                         --putStrLn $ show pstate''
                         parseEvents pstate''
@@ -171,8 +172,23 @@ handleEvent pstate event io =
     case spec event of
         CreateMachine id_ t -> do
             --TODO: save to file/DataBase/Whatever
-            return $ addMachine pstate id_ t
+            return $ addMachine pstate (fromIntegral id_) t
+        KillMachine id_ -> do
+            return $ killMachine pstate (fromIntegral id_) (time event)
+        _ -> return pstate
+
+
+machineLens m_id    = p_rtsState.(at m_id)
+processLens m_id p_id = (machineLens m_id)._Just._3.(at p_id)
+threadLens  m_id p_id t_id = (processLens m_id p_id)._Just._3.(at p_id)
 
 addMachine :: ParserState -> MachineID -> Timestamp -> ParserState
-addMachine pstate id_ t = over (p_rtsState.machines)
-    ((:) (id_, t, Idle, MachineState [])) pstate
+addMachine pstate m_id t = set (machineLens m_id)
+    (Just (t, Idle, M.empty)) pstate
+
+addProccess :: ParserState -> MachineID -> ProcessID -> Timestamp -> ParserState
+addProccess pstate m_id p_id t = set (processLens m_id p_id)
+    (Just (t, Idle, M.empty)) pstate
+
+killMachine :: ParserState -> MachineID -> Timestamp -> ParserState
+killMachine pstate m_id t = set (machineLens m_id) Nothing pstate

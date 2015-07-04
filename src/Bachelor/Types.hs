@@ -6,31 +6,24 @@
 module Bachelor.Types where
 
 import Control.Lens
+import qualified Data.HashMap.Strict as M
 import Data.Word
 -- The GUIEvent type describes events that can be displayed within the
 -- edentv GUI. All of these have a specified starting time and duration
 -- | describes the current state of the RTS at the current moment in time
-type MachineID = Word16
-type ProcessID = Word64
-type ThreadID = Word64
+type MachineID = Int
+type ProcessID = Int
+type ThreadID = Int
 type Time = Word64
 
 data RunState = Idle | Running | Blocked | Runnable
+type RTSState = M.HashMap MachineID Mashine
+type Mashine  = (Time,RunState,M.HashMap ProcessID Process)
+type Process  = (Time,RunState,M.HashMap ThreadID Thread)
+type Thread   = (Time,RunState)
 
-
-data ProcessState = ProcessState {
-    _threads :: [(ThreadID, Time, RunState)]
-}
-$(makeLenses ''ProcessState)
-data MachineState = MachineState {
-    _processes :: [(ProcessID, Time, RunState, ProcessState)]
-}
-$(makeLenses ''MachineState)
-
-data RTSState = RTSState {
-    _machines :: [(MachineID, Time, RunState, MachineState)]
-}
-$(makeLenses ''RTSState)
+startingState :: RTSState
+startingState = M.empty
 
 data GUIEvent = GUIEvent
 
