@@ -1,11 +1,12 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TemplateHaskell #-}
-module Bachelor.SeqParse where
+module Bachelor.SeqParse (parse, ParserState) where
 
 #define EVENTLOG_CONSTANTS_ONLY
 #include "EventLogFormat.h"
 
 import Bachelor.SeqParse.PreParse
+import Bachelor.Types
 import Control.Applicative
 import Control.Exception
 import Control.Lens
@@ -22,7 +23,6 @@ import GHC.RTS.Events
 import qualified Data.HashMap.Strict as M
 import qualified Data.IntMap as IM
 
-data RTSState = RTSState
 data ParserState = ParserState {
     _p_bs       :: LB.ByteString,
     _p_bsOffset :: ByteOffset,
@@ -37,22 +37,23 @@ $(makeLenses ''ParserState)
 instance Show ParserState where
     show p = "Parser is " ++ (show $ p ^. p_bsOffset) ++ " bytes in."
 
--- | describes the current state of the RTS at the current moment in time
 
 filename = "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"
 
--- |
--- |
-parse :: Int -> IO ()
-parse n = do
-    bs <- LB.readFile filename
+-- | parses a single *.eventlog file for the events of the capability n
+parse :: FilePath -- ^ Path to the *.Eventlog file.
+    -> Int        -- ^ The capability to analyze
+    -> IO ()
+parse file
+    n = do
+    bs <- LB.readFile file
     blockinfo <- findBlocks bs
     if (null (filter (\x->capNo x==n) blockinfo))
         then error $ "No EventBlocks for Capability "++(show n)++" found."
         else do
             let skipMap =  mkSkipMap n blockinfo
                 (bs', offset, parsers) = getParsers bs
-                pstate = ParserState bs' offset parsers RTSState n skipMap
+                pstate = ParserState bs' offset parsers (RTSState []) n skipMap
                 (datb,pstate') = runGetOrFailHard getWord32be pstate
             if (datb/=EVENT_DATA_BEGIN)
                 then error "Data begin section not found"
@@ -74,7 +75,7 @@ parseEvents pstate =
             parseEvents pstate'
         else case (runGetOrFailHard getSingleEvent pstate) of
             ((Left err),_) -> error err
-            ((Right Nothing),pstate'') -> return ()
+            ((Right Nothing),_) -> return ()
             ((Right (Just e)),pstate'') -> do
                 case (spec e) of
                     (EventBlock _ _ _) -> do
@@ -86,10 +87,9 @@ parseEvents pstate =
                         parseEvents pstate''
 
 -- | If the parser is at the beginning of a blockevent, do the following:
--- | If the current event belongs to the Capability we are parsing for,
--- | the just skip the 'block' event (which should be 24 bytes long)
--- | otherwise skip the entire block
-
+--  If the current event belongs to the Capability we are parsing for,
+--  the just skip the 'block' event (which should be 24 bytes long)
+--  otherwise skip the entire block
 skipNeeded :: ParserState -> Bool
 skipNeeded pstate =
     let cur     = (pstate^.p_bsOffset)
@@ -101,16 +101,16 @@ mkSkip pstate = snd $ runGetOrFailHard
             pstate
 
 -- | executes runGetOrFail and updates the state of the parser
--- | produces an error in case the parsing failes.
+--  produces an error in case the parsing failes.
 runGetOrFailHard :: Get a -> ParserState -> (a, ParserState)
 runGetOrFailHard g pstate = case (runGetOrFail g (_p_bs pstate)) of
-        (Left  (bs',offset,err)) -> error err
+        (Left  (_',_,err)) -> error err
         (Right (bs',offset,res)) -> (res,
             p_bs .~ bs' $ (p_bsOffset %~ (+offset) $ pstate)
             ) -- add the previous offsets and set the new bytestring
 
 -- | consumes a lazy bytestring and returns a new ParserState that
--- | has already consumed the header and contains the correct EventParsers
+--  has already consumed the header and contains the correct EventParsers
 getParsers :: ByteString -> (LB.ByteString, ByteOffset, EventParsers)
 getParsers bs = case (runGetOrFail getParsers' bs) of
     (Left  (bs',offset,err)) -> error err
@@ -164,3 +164,15 @@ getParsers' = runExceptT $ do
                                  ++ mercuryParsers ++ perfParsers
         parsers = mkEventTypeParsers imap event_parsers
     return parsers
+
+-- | takes the current state and applies the Last parsed Event to it.
+handleEvent :: (IOEventData a) => ParserState -> Event -> a -> IO ParserState
+handleEvent pstate event io =
+    case spec event of
+        CreateMachine id_ t -> do
+            --TODO: save to file/DataBase/Whatever
+            return $ addMachine pstate id_ t
+
+addMachine :: ParserState -> MachineID -> Timestamp -> ParserState
+addMachine pstate id_ t = over (p_rtsState.machines)
+    ((:) (id_, t, Idle, MachineState [])) pstate
