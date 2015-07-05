@@ -170,25 +170,39 @@ getParsers' = runExceptT $ do
 handleEvent :: (IOEventData a) => ParserState -> Event -> a -> IO ParserState
 handleEvent pstate event io =
     case spec event of
-        CreateMachine id_ t -> do
-            --TODO: save to file/DataBase/Whatever
-            return $ addMachine pstate (fromIntegral id_) t
-        KillMachine id_ -> do
-            return $ killMachine pstate (fromIntegral id_) (time event)
+        CreateMachine m_id t -> do
+            return pstate
         _ -> return pstate
 
 
-machineLens m_id    = p_rtsState.(at m_id)
-processLens m_id p_id = (machineLens m_id)._Just._3.(at p_id)
-threadLens  m_id p_id t_id = (processLens m_id p_id)._Just._3.(at p_id)
+machineLens m_id = p_rtsState._1.(at m_id)
+processLens p_id = p_rtsState._2.(at p_id)
+threadLens  t_id = p_rtsState._3.(at t_id)
 
-addMachine :: ParserState -> MachineID -> Timestamp -> ParserState
-addMachine pstate m_id t = set (machineLens m_id)
-    (Just (t, Idle, M.empty)) pstate
+{-
+    Handlers for the different EventTypes.
+    Some do not create GUIEvents, so they just return the new ParserState
+    Some do create GUIEvents, so they return (ParserState,[GUIEvent])
+-}
 
-addProccess :: ParserState -> MachineID -> ProcessID -> Timestamp -> ParserState
-addProccess pstate m_id p_id t = set (processLens m_id p_id)
-    (Just (t, Idle, M.empty)) pstate
+createMachineHandler :: ParserState -> MachineId -> Timestamp -> ParserState
+createMachineHandler pstate m_id t =
+    set (machineLens m_id) (Just (Idle,t,[])) pstate
 
-killMachine :: ParserState -> MachineID -> Timestamp -> ParserState
-killMachine pstate m_id t = set (machineLens m_id) Nothing pstate
+createProcessHandler :: ParserState -> ProcessId -> Timestamp -> ParserState
+createProcessHandler pstate p_id t =
+    set (processLens p_id) (Just (Idle,t,[])) pstate
+
+createThreadHandler :: ParserState -> ThreadId -> Timestamp -> ParserState
+createThreadHandler pstate t_id t =
+    set (threadLens t_id) (Just (Idle,t)) pstate
+
+assignThreadToProcessHandler :: ParserState -> ThreadId -> ProcessId -> (ParserState,[GUIEvent])
+assignThreadToProcessHandler pstate t_id p_id = (newstate, [assign])
+    where newstate = over ((processLens p_id)._Just._3) ((:) t_id) pstate
+          assign   = AssignTtoP t_id p_id
+
+-- a Process has been killed.
+-- kill the Process, and all its threads.
+killProcessHandler :: ParserState -> ProcessId -> (ParserState,[GUIEvent])
+killProcessHandler pstate p_id = undefined

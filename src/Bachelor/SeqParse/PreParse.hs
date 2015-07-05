@@ -59,8 +59,8 @@ findBlocks bs = do
     let header_res = runGetOrFail (skipHeader >> (skip 4)) bs --'datb'
     case header_res of
         Left  (_,_,err) -> return $ error err
-        Right (bs ,offset, result) -> do
-            return $ findBlocks' bs offset
+        Right (bs' ,offset, _) -> do
+            return $ findBlocks' bs' offset
 
 -- | helper function to parse the eventblocks after consuming the header.
 findBlocks' :: LB.ByteString -> ByteOffset -> [BlockInfo]
@@ -122,7 +122,7 @@ skipEventTypeDeclarations = do
             skip 4 -- "ete\NUL"
             skipEventTypeDeclarations
         else if (marker == EVENT_HET_END) then do
-                marker <- getWord32be
-                return marker
+                marker' <- getWord32be
+                return marker'
             else do
                 return $ error "EVENT_HET_END marker not found"

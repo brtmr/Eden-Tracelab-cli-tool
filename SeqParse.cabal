@@ -52,6 +52,8 @@ library
   
   -- Modules included in this library but not exported.
   other-modules:       Bachelor.SeqParse.PreParse
+                       Bachelor.DataBase 
+                       Bachelor.Types
   
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:    
@@ -62,6 +64,7 @@ library
                        bytestring,
                        ghc-events-parallel,
                        containers >= 0.2 && < 0.6,
+                       unordered-containers,
                        mtl,
                        lens
   
