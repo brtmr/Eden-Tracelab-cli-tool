@@ -1,4 +1,5 @@
 module Bachelor.Parsers where
+
 import GHC.RTS.Events
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.Binary as Bin
@@ -16,6 +17,14 @@ type EventTypeDesc    = String
 type EventTypeSize    = Word16
 
 type Capset = Word32
+type TaskId = Word64
+type ProcessId = Word32
+type MachineId = Word16
+type PortId = ThreadId
+type MessageSize = Word32
+type RawMsgTag = Word8
+
+
 
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
 
@@ -157,7 +166,107 @@ parseEvent st = do
                 36-> return $ Event timestamp SparkDud
                 37-> return $ Event timestamp SparkOverflow
                 38-> return $ Event timestamp SparkRun
-
+                39-> do
+                    vic <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (SparkSteal vic)
+                40-> return $ Event timestamp SparkFizzle
+                41-> return $ Event timestamp SparkGC
+                43-> do
+                    capSet <- Bin.anyWord32be
+                    unixEpoch <- Bin.anyWord64be
+                    nanoseconds <- Bin.anyWord32be
+                    return $ Event timestamp (WallClockTime capSet unixEpoch nanoseconds)
+                45 -> do
+                    cap <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (CapCreate cap)
+                46 -> do
+                    cap <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (CapDelete cap)
+                47 -> do
+                    cap <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (CapDisable cap)
+                48 -> do
+                    cap <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (CapEnable cap)
+                49 -> do
+                    cap <- Bin.anyWord32be
+                    bytes <- Bin.anyWord64be
+                    return $ Event timestamp (HeapAllocated cap bytes)
+                50 -> do
+                    cap <- Bin.anyWord32be
+                    bytes <- Bin.anyWord64be
+                    return $ Event timestamp (HeapSize cap bytes)
+                51 -> do
+                    cap <- Bin.anyWord32be
+                    bytes <- Bin.anyWord64be
+                    return $ Event timestamp (HeapLive cap bytes)
+                52 -> do
+                    cap <- Bin.anyWord32be
+                    gens <- fromIntegral <$> Bin.anyWord16be
+                    maxHeapSize   <- Bin.anyWord64be
+                    allocAreaSize <- Bin.anyWord64be
+                    mblockSize    <- Bin.anyWord64be
+                    blockSize     <- Bin.anyWord64be
+                    return $ Event timestamp (HeapInfoGHC cap gens maxHeapSize
+                        allocAreaSize mblockSize blockSize)
+                53 -> do
+                    heapCapset   <- Bin.anyWord32be
+                    gen          <- fromIntegral <$> Bin.anyWord16be
+                    copied       <- Bin.anyWord64be
+                    slop         <- Bin.anyWord64be
+                    frag         <- Bin.anyWord64be
+                    parNThreads  <- fromIntegral <$> Bin.anyWord32be
+                    parMaxCopied <- Bin.anyWord64be
+                    parTotCopied <- Bin.anyWord64be
+                    return $ Event timestamp (GCStatsGHC heapCapset gen
+                        copied slop frag parNThreads parMaxCopied parTotCopied)
+                54 -> return $ Event timestamp GlobalSyncGC
+                55 -> do
+                    taskId <- Bin.anyWord64be
+                    cap    <- fromIntegral <$> Bin.anyWord16be
+                    tid    <- Bin.anyWord64be
+                    return $ Event timestamp (TaskCreate taskId cap (KernelThreadId tid))
+                56 -> do
+                    taskId <- Bin.anyWord64be
+                    cap    <- fromIntegral <$> Bin.anyWord16be
+                    capNew <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (TaskMigrate taskId cap capNew)
+                57 -> do
+                    taskId <- Bin.anyWord64be
+                    return $ Event timestamp (TaskDelete taskId)
+                60 -> return $ Event timestamp EdenStartReceive
+                61 -> return $ Event timestamp EdenEndReceive
+                62 -> do
+                    pid <- Bin.anyWord32be
+                    return $ Event timestamp (CreateProcess pid)
+                63 -> do
+                    pid <- Bin.anyWord32be
+                    return $ Event timestamp (KillProcess pid)
+                64 -> do
+                    tid <- Bin.anyWord32be
+                    pid <- Bin.anyWord32be
+                    return $ Event timestamp (AssignThreadToProcess tid pid)
+                65 -> do
+                    mid <- fromIntegral <$> Bin.anyWord16be
+                    realtime <- Bin.anyWord64be
+                    return $ Event timestamp (CreateMachine mid realtime)
+                66 -> do
+                    mid <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (KillMachine mid)
+                67 -> do
+                    tag <- A.anyWord8
+                    sP  <- Bin.anyWord32be
+                    sT  <- Bin.anyWord32be
+                    rM  <- Bin.anyWord16be
+                    rP  <- Bin.anyWord32be
+                    rIP <- Bin.anyWord32be
+                    return $ Event timestamp (SendMessage { mesTag = toMsgTag tag,
+                                         senderProcess = sP,
+                                         senderThread = sT,
+                                         receiverMachine = rM,
+                                         receiverProcess = rP,
+                                         receiverInport = rIP
+                                       })
                 _ -> do --for all event types not yet implemented.
                         _ <- A.take (fromIntegral s)
                         return $ Event timestamp (UnknownEvent type_)
@@ -194,6 +303,21 @@ parseEvent st = do
                     capSet <- Bin.anyWord32be
                     varData <- C.unpack <$> A.take (varDataLength - 4)
                     return $ Event timestamp (ProgramEnv capSet (splitNull varData))
+                42 -> do
+                    varDataLength <- fromIntegral <$> Bin.anyWord16be
+                    string <- C.unpack <$> A.take (varDataLength - 4)
+                    stringId <- Bin.anyWord32be
+                    return $ Event timestamp (InternString string stringId)
+                44 -> do
+                    varDataLength <- fromIntegral <$> Bin.anyWord16be-- Warning: order of fiz and gcd reversed!ord16be
+                    threadId <- Bin.anyWord32be
+                    varData <- C.unpack <$> A.take (varDataLength - 4)
+                    return $ Event timestamp (ThreadLabel threadId varData)
+                58 -> do
+                    varDataLength <- Bin.anyWord16be-- Warning: order of fiz and gcd reversed!ord16be
+                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                    return $ Event timestamp (UserMarker varData)
+
                 _ -> do
                     eventSize  <- Bin.anyWord16be
                     _  <- A.take $ fromIntegral eventSize
@@ -204,27 +328,27 @@ type RawThreadStopStatus = Word16
 
 mkStopStatus :: RawThreadStopStatus -> ThreadStopStatus
 mkStopStatus n = case n of
- 0  ->  NoStatus
- 1  ->  HeapOverflow
- 2  ->  StackOverflow
- 3  ->  ThreadYielding
- 4  ->  ThreadBlocked
- 5  ->  ThreadFinished
- 6  ->  ForeignCall
- 7  ->  BlockedOnMVar
- 8  ->  BlockedOnBlackHole
- 9  ->  BlockedOnRead
- 10 ->  BlockedOnWrite
- 11 ->  BlockedOnDelay
- 12 ->  BlockedOnSTM
- 13 ->  BlockedOnDoProc
- 14 ->  BlockedOnCCall
- 15 ->  BlockedOnCCall_NoUnblockExc
- 16 ->  BlockedOnMsgThrowTo
- 17 ->  ThreadMigrating
- 18 ->  BlockedOnMsgGlobalise
- 19 ->  NoStatus -- yeuch... this one does not actually exist in GHC eventlogs
- 20 ->  BlockedOnMVarRead -- sincRawThreadStopStatustatus -> ThreadStopStatus
+    0  ->  NoStatus
+    1  ->  HeapOverflow
+    2  ->  StackOverflow
+    3  ->  ThreadYielding
+    4  ->  ThreadBlocked
+    5  ->  ThreadFinished
+    6  ->  ForeignCall
+    7  ->  BlockedOnMVar
+    8  ->  BlockedOnBlackHole
+    9  ->  BlockedOnRead
+    10 ->  BlockedOnWrite
+    11 ->  BlockedOnDelay
+    12 ->  BlockedOnSTM
+    13 ->  BlockedOnDoProc
+    14 ->  BlockedOnCCall
+    15 ->  BlockedOnCCall_NoUnblockExc
+    16 ->  BlockedOnMsgThrowTo
+    17 ->  ThreadMigrating
+    18 ->  BlockedOnMsgGlobalise
+    19 ->  NoStatus -- yeuch... this one does not actually exist in GHC eventlogs
+    20 ->  BlockedOnMVarRead -- sincRawThreadStopStatustatus -> ThreadStopStatus
 
 mkCapsetType :: Word16 -> CapsetType
 mkCapsetType n = case n of
@@ -237,3 +361,8 @@ splitNull :: String -> [String]
 splitNull [] = []
 splitNull xs = case span (/= '\0') xs of
                 (x, xs') -> x : splitNull (drop 1 xs')
+
+
+offset = 0x50
+toMsgTag :: RawMsgTag -> MessageTag
+toMsgTag = toEnum . fromIntegral . (\n -> n - offset)
