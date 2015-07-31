@@ -32,7 +32,8 @@ eventLogParser :: A.Parser EventLog
 eventLogParser = do
     eventLogHeader <- headerParser
     let sizeTable = mkSizeTable eventLogHeader
-    return undefined
+    events <- parseEventStream sizeTable
+    return $ (EventLog eventLogHeader (Data events))
 
 mkSizeTable :: Header -> SizeTable
 mkSizeTable h = foldr (\e m -> M.insert (num e) (size e) m) M.empty (eventTypes h)
@@ -55,22 +56,24 @@ eventTypeParser = do
     name   <- A.take (fromIntegral sizeName)
     sizeExtraInfo <- fromIntegral <$> Bin.anyWord32be
     _ <- A.take sizeExtraInfo
+    _       <- A.string $ C.pack "ete\NUL" --end event type
     let v = eventTypeSize == 0xFFFF
     return $ EventType id_ (C.unpack name) (if v then Nothing else Just eventTypeSize)
 
 testHeader = do
-    bs <- B.readFile "/home/basti/bachelor/traces/mergesort_large/mergesort#80.eventlog"
-    let res = A.parse headerParser bs
-    case res of
-        (A.Done _ r) -> mapM_ print $ eventTypes r
-        _             -> error "parsing failed"
+    bs <- B.readFile "/home/basti/bachelor/traces/mergesort_large/mergesort#100.eventlog"
+    case A.parse eventLogParser bs of
+        (A.Fail i sl s) -> putStrLn $ "parse failed " ++ show sl ++ " " ++ s ++ (show (B.take 100 i))
+        A.Partial{}     -> putStrLn "partial"
+        (A.Done i (EventLog _ (Data a)))    -> putStrLn $ "Done" ++ (show $ length a)
 
-parseEventStrem :: SizeTable -> A.Parser [Event]
-parseEventStrem st = do
+
+
+parseEventStream :: SizeTable -> A.Parser [Event]
+parseEventStream st = do
     _ <- A.string $ C.pack "datb"
-    eventList <- A.manyTill (parseEvent st) (A.try (Bin.word16be 0xFFFF)) --parse Events until the
-                                                      --end Marker is reached.
-    return []
+    A.manyTill (parseEvent st) (A.try (Bin.word16be 0xFFFF)) --parse Events until the
+                                                             --end Marker is reached.
 
 -- parses relevant Events, skips otherwise
 -- This parser is not compatible with eventlogs created wtype Capset   = Word32
@@ -121,15 +124,18 @@ parseEvent st = do
                 17-> do
                     cap <- fromIntegral <$> Bin.anyWord16be
                     return $ Event timestamp (CapCreate cap)
-                18-> do --TODO: skip this if we dont care for this capability!
-                    return undefined
+                18->do
+                    blockSize <- Bin.anyWord32be
+                    endTime   <- Bin.anyWord64be
+                    cap       <- fromIntegral <$> Bin.anyWord16be
+                    return $ Event timestamp (EventBlock timestamp cap [])
                 20-> return $ Event timestamp GCIdle
                 21-> return $ Event timestamp GCWork
                 22-> return $ Event timestamp GCDone
                 25-> do
                     capSet <- Bin.anyWord32be
                     capSetTypeId <-Bin.anyWord16be
-                    let capSetType = (mkCapsetType capSetTypeId)
+                    let capSetType = mkCapsetType capSetTypeId
                     return $ Event timestamp (CapsetCreate capSet capSetType)
                 26-> do
                     capSet <- Bin.anyWord32be
@@ -267,6 +273,34 @@ parseEvent st = do
                                          receiverProcess = rP,
                                          receiverInport = rIP
                                        })
+                68 -> do
+                    tag <- A.anyWord8
+                    rP  <- Bin.anyWord32be
+                    rIP <- Bin.anyWord32be
+                    sM  <- Bin.anyWord16be
+                    sP  <- Bin.anyWord32be
+                    sT  <- Bin.anyWord32be
+                    mS  <- Bin.anyWord32be
+                    return $ Event timestamp (ReceiveMessage { mesTag = toMsgTag tag,
+                                             receiverProcess = rP,
+                                             receiverInport = rIP,
+                                             senderMachine = sM,
+                                             senderProcess = sP,
+                                             senderThread= sT,
+                                             messageSize = mS
+                                           })
+                69 -> do
+                    tag <- A.anyWord8
+                    sP  <- Bin.anyWord32le
+                    sT  <- Bin.anyWord32le
+                    rP  <- Bin.anyWord32le
+                    rIP <- Bin.anyWord32le
+                    return $ Event timestamp (SendReceiveLocalMessage { mesTag = toMsgTag tag,
+                                                     senderProcess = sP,
+                                                     senderThread = sT,
+                                                     receiverProcess = rP,
+                                                     receiverInport = rIP
+                                                   })
                 _ -> do --for all event types not yet implemented.
                         _ <- A.take (fromIntegral s)
                         return $ Event timestamp (UnknownEvent type_)
