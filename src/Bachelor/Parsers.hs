@@ -1,4 +1,3 @@
-
 {-# LANGUAGE CPP, RankNTypes, MagicHash, BangPatterns #-}
 #if __GLASGOW_HASKELL__ >= 701
 {-# LANGUAGE Trustworthy #-}
@@ -21,6 +20,7 @@ import qualified Data.ByteString.Char8 as C
 import Data.Maybe
 import Control.Applicative
 import Data.Bits
+import System.Environment
 
 #if defined(__GLASGOW_HASKELL__) && !defined(__HADDOCK__)
 -- needed for (# unboxing #) with magic hash
@@ -42,7 +42,28 @@ type PortId = ThreadId
 type MessageSize = Word32
 type RawMsgTag = Word8
 
+
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
+
+main :: IO()
+main = do
+    args <- getArgs
+    let fn = head args
+    run fn
+
+run :: String -> IO()
+run fn = do
+    bs <- B.readFile fn
+    case A.parse eventLogParser bs of
+        (A.Fail i sl s) -> putStrLn $ "parse failed " ++ show sl ++ " " ++ s ++ (show (B.take 100 i))
+        A.Partial{}     -> putStrLn "partial"
+        (A.Done i (EventLog _ (Data a)))    -> putStrLn $ "Done. " ++ (show $ length a)
+
+{-
+instance Eq Event where
+    (==) (Event t1 (EventBlock _ _ _)) (Event t2 (EventBlock _ _ _)) = t1==t2
+    (==) (Event t1 spec1) (Event t2 spec2) = t1 == t2 && spec1 == spec2
+-}
 
 eventLogParser :: A.Parser EventLog
 eventLogParser = do
@@ -76,302 +97,307 @@ eventTypeParser = do
     let v = eventTypeSize == 0xFFFF
     return $ EventType id_ (C.unpack name) (if v then Nothing else Just eventTypeSize)
 
-testHeader = do
-    bs <- B.readFile "/home/basti/bachelor/traces/mergesort_large/mergesort#33.eventlog"
-    case A.parse eventLogParser bs of
-        (A.Fail i sl s) -> putStrLn $ "parse failed " ++ show sl ++ " " ++ s ++ (show (B.take 100 i))
-        A.Partial{}     -> putStrLn "partial"
-        (A.Done i (EventLog _ (Data a)))    -> putStrLn $ "Done. " ++ (show $ length a)
-
-
-
 parseEventStream :: SizeTable -> A.Parser [Event]
 parseEventStream st = do
     _ <- A.string $ C.pack "datb"
-    A.manyTill (parseEvent st) (A.try (Bin.word16be 0xFFFF)) --parse Events until the
-                                                             --end Marker is reached.
+    events <- A.many1 (parseEvent st)
+    events <- parseEvents st
+    _ <- Bin.word16be 0xFFFF --parse Events until the
+    return events
+
+parseEvents :: SizeTable -> A.Parser [Event]
+parseEvents st = do
+    event <- parseEvent st
+    case event of
+        Nothing -> return []
+        (Just e)  -> do
+            restEvents <- parseEvents st
+            return $ e : restEvents
 
 -- parses relevant Events, skips otherwise
 -- This parser is not compatible with eventlogs created wtype Capset   = Word32
-parseEvent :: SizeTable -> A.Parser Event
+parseEvent :: SizeTable -> A.Parser (Maybe Event)
 parseEvent st = do
     type_     <- word16be <$> A.take 2 -- the type (spec) of the event
-    timestamp <- word64be <$> A.take 8 -- the timestamp
-    let maybeSize = st M.! type_ --lookup the size of the event in the table
-    case maybeSize of
-        (Just s) ->
-            case type_ of
-                0 -> do -- CreateThread
-                        threadId <- word32be <$> A.take 4
-                        return $ Event timestamp (CreateThread threadId)
-                1 -> do -- RunThread
-                        threadId <- word32be <$> A.take 4
-                        return $ Event timestamp (RunThread threadId)
-                2 -> do -- StopThread
-                        threadId <- word32be <$> A.take 4
-                        blockreason <- word16be <$> A.take 2
-                        _ <- word32be <$> A.take 4
-                            -- used in older ghcs by BlockedOnBlackHoleOwnedBy
-                            -- ignored here.
-                        return $ Event timestamp (StopThread threadId
-                                (mkStopStatus blockreason))
-                3 -> do -- ThreadRunnable
-                        threadId <- word32be <$> A.take 4
-                        return $ Event timestamp (ThreadRunnable threadId)
-                4 -> do -- MigrateThread
-                        threadId <- word32be <$> A.take 4
-                        capId    <- fromIntegral <$> word16be <$> A.take 2
-                        return $ Event timestamp (MigrateThread threadId capId)
-                --5-7 deprecated
-                8 -> do --WakeupThread
-                        threadId    <- word32be <$> A.take 4
-                        otherCap    <- word16be <$> A.take 2
-                        return $ Event timestamp (MigrateThread threadId
-                            (fromIntegral otherCap))
-                9 -> return $ Event timestamp StartGC
-                10-> return $ Event timestamp EndGC
-                11-> return $ Event timestamp RequestSeqGC
-                12-> return $ Event timestamp RequestParGC
-                --13/14 deprecated
-                15-> do
-                    threadId <-word32be <$> A.take 4
-                    return $ Event timestamp (CreateSparkThread threadId)
-                --16 variable sized
-                17-> do
-                    cap <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapCreate cap)
-                18->do
-                    blockSize <- word32be <$> A.take 4
-                    endTime   <- word64be <$> A.take 8
-                    cap       <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (EventBlock timestamp cap [])
-                20-> return $ Event timestamp GCIdle
-                21-> return $ Event timestamp GCWork
-                22-> return $ Event timestamp GCDone
-                25-> do
-                    capSet <- word32be <$> A.take 4
-                    capSetTypeId <-word16be <$> A.take 2
-                    let capSetType = mkCapsetType capSetTypeId
-                    return $ Event timestamp (CapsetCreate capSet capSetType)
-                26-> do
-                    capSet <- word32be <$> A.take 4
-                    return $ Event timestamp (CapsetDelete capSet)
-                27-> do
-                    capSet <- word32be <$> A.take 4
-                    cap    <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapsetAssignCap capSet cap)
-                28 -> do
-                    capSet <- word32be <$> A.take 4
-                    cap    <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapsetRemoveCap capSet cap)
-                32 -> do
-                    capSet <- word32be <$> A.take 4
-                    pid    <- word32be <$> A.take 4
-                    return $ Event timestamp (OsProcessPid capSet pid)
-                33 -> do
-                    capSet <- word32be <$> A.take 4
-                    pid    <- word32be <$> A.take 4
-                    return $ Event timestamp (OsProcessParentPid capSet pid)
-                34 -> do
-                    crt <- word64be <$> A.take 8
-                    dud <- word64be <$> A.take 8
-                    ovf <- word64be <$> A.take 8
-                    cnv <- word64be <$> A.take 8
-                    gcd <- word64be <$> A.take 8
-                    fiz <- word64be <$> A.take 8
-                    rem <- word64be <$> A.take 8
-                    return $ Event timestamp SparkCounters{sparksCreated    = crt, sparksDud       = dud,
-                                         sparksOverflowed = ovf, sparksConverted = cnv,
-                                         sparksFizzled    = fiz, sparksGCd       = gcd,
-                                         sparksRemaining  = rem}
-                35-> return $ Event timestamp SparkCreate
-                36-> return $ Event timestamp SparkDud
-                37-> return $ Event timestamp SparkOverflow
-                38-> return $ Event timestamp SparkRun
-                39-> do
-                    vic <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (SparkSteal vic)
-                40-> return $ Event timestamp SparkFizzle
-                41-> return $ Event timestamp SparkGC
-                43-> do
-                    capSet <- word32be <$> A.take 4
-                    unixEpoch <- word64be <$> A.take 8
-                    nanoseconds <- word32be <$> A.take 4
-                    return $ Event timestamp (WallClockTime capSet unixEpoch nanoseconds)
-                45 -> do
-                    cap <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapCreate cap)
-                46 -> do
-                    cap <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapDelete cap)
-                47 -> do
-                    cap <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapDisable cap)
-                48 -> do
-                    cap <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (CapEnable cap)
-                49 -> do
-                    cap <- word32be <$> A.take 4
-                    bytes <- word64be <$> A.take 8
-                    return $ Event timestamp (HeapAllocated cap bytes)
-                50 -> do
-                    cap <- word32be <$> A.take 4
-                    bytes <- word64be <$> A.take 8
-                    return $ Event timestamp (HeapSize cap bytes)
-                51 -> do
-                    cap <- word32be <$> A.take 4
-                    bytes <- word64be <$> A.take 8
-                    return $ Event timestamp (HeapLive cap bytes)
-                52 -> do
-                    cap <- word32be <$> A.take 4
-                    gens <- fromIntegral <$> word16be <$> A.take 2
-                    maxHeapSize   <- word64be <$> A.take 8
-                    allocAreaSize <- word64be <$> A.take 8
-                    mblockSize    <- word64be <$> A.take 8
-                    blockSize     <- word64be <$> A.take 8
-                    return $ Event timestamp (HeapInfoGHC cap gens maxHeapSize
-                        allocAreaSize mblockSize blockSize)
-                53 -> do
-                    heapCapset   <- word32be <$> A.take 4
-                    gen          <- fromIntegral <$> word16be <$> A.take 2
-                    copied       <- word64be <$> A.take 8
-                    slop         <- word64be <$> A.take 8
-                    frag         <- word64be <$> A.take 8
-                    parNThreads  <- fromIntegral <$> word32be <$> A.take 4
-                    parMaxCopied <- word64be <$> A.take 8
-                    parTotCopied <- word64be <$> A.take 8
-                    return $ Event timestamp (GCStatsGHC heapCapset gen
-                        copied slop frag parNThreads parMaxCopied parTotCopied)
-                54 -> return $ Event timestamp GlobalSyncGC
-                55 -> do
-                    taskId <- word64be <$> A.take 8
-                    cap    <- fromIntegral <$> word16be <$> A.take 2
-                    tid    <- word64be <$> A.take 8
-                    return $ Event timestamp (TaskCreate taskId cap (KernelThreadId tid))
-                56 -> do
-                    taskId <- word64be <$> A.take 8
-                    cap    <- fromIntegral <$> word16be <$> A.take 2
-                    capNew <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (TaskMigrate taskId cap capNew)
-                57 -> do
-                    taskId <- word64be <$> A.take 8
-                    return $ Event timestamp (TaskDelete taskId)
-                60 -> return $ Event timestamp EdenStartReceive
-                61 -> return $ Event timestamp EdenEndReceive
-                62 -> do
-                    pid <- word32be <$> A.take 4
-                    return $ Event timestamp (CreateProcess pid)
-                63 -> do
-                    pid <- word32be <$> A.take 4
-                    return $ Event timestamp (KillProcess pid)
-                64 -> do
-                    tid <- word32be <$> A.take 4
-                    pid <- word32be <$> A.take 4
-                    return $ Event timestamp (AssignThreadToProcess tid pid)
-                65 -> do
-                    mid <- fromIntegral <$> word16be <$> A.take 2
-                    realtime <- word64be <$> A.take 8
-                    return $ Event timestamp (CreateMachine mid realtime)
-                66 -> do
-                    mid <- fromIntegral <$> word16be <$> A.take 2
-                    return $ Event timestamp (KillMachine mid)
-                67 -> do
-                    tag <- A.anyWord8
-                    sP  <- word32be <$> A.take 4
-                    sT  <- word32be <$> A.take 4
-                    rM  <- word16be <$> A.take 2
-                    rP  <- word32be <$> A.take 4
-                    rIP <- word32be <$> A.take 4
-                    return $ Event timestamp (SendMessage { mesTag = toMsgTag tag,
-                                         senderProcess = sP,
-                                         senderThread = sT,
-                                         receiverMachine = rM,
-                                         receiverProcess = rP,
-                                         receiverInport = rIP
-                                       })
-                68 -> do
-                    tag <- A.anyWord8
-                    rP  <- word32be <$> A.take 4
-                    rIP <- word32be <$> A.take 4
-                    sM  <- word16be <$> A.take 2
-                    sP  <- word32be <$> A.take 4
-                    sT  <- word32be <$> A.take 4
-                    mS  <- word32be <$> A.take 4
-                    return $ Event timestamp (ReceiveMessage { mesTag = toMsgTag tag,
-                                             receiverProcess = rP,
-                                             receiverInport = rIP,
-                                             senderMachine = sM,
-                                             senderProcess = sP,
-                                             senderThread= sT,
-                                             messageSize = mS
-                                           })
-                69 -> do
-                    tag <- A.anyWord8
-                    sP  <- Bin.anyWord32le
-                    sT  <- Bin.anyWord32le
-                    rP  <- Bin.anyWord32le
-                    rIP <- Bin.anyWord32le
-                    return $ Event timestamp (SendReceiveLocalMessage { mesTag = toMsgTag tag,
-                                                     senderProcess = sP,
-                                                     senderThread = sT,
+    if (type_==0xFFFF)
+        then return Nothing
+        else do
+            timestamp <- word64be <$> A.take 8 -- the timestamp
+            let maybeSize = st M.! type_ --lookup the size of the event in the table
+            case maybeSize of
+                (Just s) ->
+                    case type_ of
+                        0 -> do -- CreateThread
+                                threadId <- word32be <$> A.take 4
+                                return $ Just $ Event timestamp (CreateThread threadId)
+                        1 -> do -- RunThread
+                                threadId <- word32be <$> A.take 4
+                                return $ Just $ Event timestamp (RunThread threadId)
+                        2 -> do -- StopThread
+                                threadId <- word32be <$> A.take 4
+                                blockreason <- word16be <$> A.take 2
+                                _ <- word32be <$> A.take 4
+                                    -- used in older ghcs by BlockedOnBlackHoleOwnedBy
+                                    -- ignored here.
+                                return $ Just $ Event timestamp (StopThread threadId
+                                        (mkStopStatus blockreason))
+                        3 -> do -- ThreadRunnable
+                                threadId <- word32be <$> A.take 4
+                                return $ Just $ Event timestamp (ThreadRunnable threadId)
+                        4 -> do -- MigrateThread
+                                threadId <- word32be <$> A.take 4
+                                capId    <- fromIntegral <$> word16be <$> A.take 2
+                                return $ Just $ Event timestamp (MigrateThread threadId capId)
+                        --5-7 deprecated
+                        8 -> do --WakeupThread
+                                threadId    <- word32be <$> A.take 4
+                                otherCap    <- word16be <$> A.take 2
+                                return $ Just $ Event timestamp (MigrateThread threadId
+                                    (fromIntegral otherCap))
+                        9 -> return $ Just $ Event timestamp StartGC
+                        10-> return $ Just $ Event timestamp EndGC
+                        11-> return $ Just $ Event timestamp RequestSeqGC
+                        12-> return $ Just $ Event timestamp RequestParGC
+                        --13/14 deprecated
+                        15-> do
+                            threadId <-word32be <$> A.take 4
+                            return $ Just $ Event timestamp (CreateSparkThread threadId)
+                        --16 variable sized
+                        17-> do
+                            cap <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapCreate cap)
+                        18->do
+                            blockSize <- word32be <$> A.take 4
+                            endTime   <- word64be <$> A.take 8
+                            cap       <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (EventBlock timestamp cap [])
+                        20-> return $ Just $ Event timestamp GCIdle
+                        21-> return $ Just $ Event timestamp GCWork
+                        22-> return $ Just $ Event timestamp GCDone
+                        25-> do
+                            capSet <- word32be <$> A.take 4
+                            capSetTypeId <-word16be <$> A.take 2
+                            let capSetType = mkCapsetType capSetTypeId
+                            return $ Just $ Event timestamp (CapsetCreate capSet capSetType)
+                        26-> do
+                            capSet <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (CapsetDelete capSet)
+                        27-> do
+                            capSet <- word32be <$> A.take 4
+                            cap    <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapsetAssignCap capSet cap)
+                        28 -> do
+                            capSet <- word32be <$> A.take 4
+                            cap    <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapsetRemoveCap capSet cap)
+                        32 -> do
+                            capSet <- word32be <$> A.take 4
+                            pid    <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (OsProcessPid capSet pid)
+                        33 -> do
+                            capSet <- word32be <$> A.take 4
+                            pid    <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (OsProcessParentPid capSet pid)
+                        34 -> do
+                            crt <- word64be <$> A.take 8
+                            dud <- word64be <$> A.take 8
+                            ovf <- word64be <$> A.take 8
+                            cnv <- word64be <$> A.take 8
+                            gcd <- word64be <$> A.take 8
+                            fiz <- word64be <$> A.take 8
+                            rem <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp SparkCounters{sparksCreated    = crt, sparksDud       = dud,
+                                                 sparksOverflowed = ovf, sparksConverted = cnv,
+                                                 sparksFizzled    = fiz, sparksGCd       = gcd,
+                                                 sparksRemaining  = rem}
+                        35-> return $ Just $ Event timestamp SparkCreate
+                        36-> return $ Just $ Event timestamp SparkDud
+                        37-> return $ Just $ Event timestamp SparkOverflow
+                        38-> return $ Just $ Event timestamp SparkRun
+                        39-> do
+                            vic <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (SparkSteal vic)
+                        40-> return $ Just $ Event timestamp SparkFizzle
+                        41-> return $ Just $ Event timestamp SparkGC
+                        43-> do
+                            capSet <- word32be <$> A.take 4
+                            unixEpoch <- word64be <$> A.take 8
+                            nanoseconds <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (WallClockTime capSet unixEpoch nanoseconds)
+                        45 -> do
+                            cap <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapCreate cap)
+                        46 -> do
+                            cap <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapDelete cap)
+                        47 -> do
+                            cap <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapDisable cap)
+                        48 -> do
+                            cap <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (CapEnable cap)
+                        49 -> do
+                            cap <- word32be <$> A.take 4
+                            bytes <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (HeapAllocated cap bytes)
+                        50 -> do
+                            cap <- word32be <$> A.take 4
+                            bytes <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (HeapSize cap bytes)
+                        51 -> do
+                            cap <- word32be <$> A.take 4
+                            bytes <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (HeapLive cap bytes)
+                        52 -> do
+                            cap <- word32be <$> A.take 4
+                            gens <- fromIntegral <$> word16be <$> A.take 2
+                            maxHeapSize   <- word64be <$> A.take 8
+                            allocAreaSize <- word64be <$> A.take 8
+                            mblockSize    <- word64be <$> A.take 8
+                            blockSize     <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (HeapInfoGHC cap gens maxHeapSize
+                                allocAreaSize mblockSize blockSize)
+                        53 -> do
+                            heapCapset   <- word32be <$> A.take 4
+                            gen          <- fromIntegral <$> word16be <$> A.take 2
+                            copied       <- word64be <$> A.take 8
+                            slop         <- word64be <$> A.take 8
+                            frag         <- word64be <$> A.take 8
+                            parNThreads  <- fromIntegral <$> word32be <$> A.take 4
+                            parMaxCopied <- word64be <$> A.take 8
+                            parTotCopied <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (GCStatsGHC heapCapset gen
+                                copied slop frag parNThreads parMaxCopied parTotCopied)
+                        54 -> return $ Just $ Event timestamp GlobalSyncGC
+                        55 -> do
+                            taskId <- word64be <$> A.take 8
+                            cap    <- fromIntegral <$> word16be <$> A.take 2
+                            tid    <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (TaskCreate taskId cap (KernelThreadId tid))
+                        56 -> do
+                            taskId <- word64be <$> A.take 8
+                            cap    <- fromIntegral <$> word16be <$> A.take 2
+                            capNew <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (TaskMigrate taskId cap capNew)
+                        57 -> do
+                            taskId <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (TaskDelete taskId)
+                        60 -> return $ Just $ Event timestamp EdenStartReceive
+                        61 -> return $ Just $ Event timestamp EdenEndReceive
+                        62 -> do
+                            pid <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (CreateProcess pid)
+                        63 -> do
+                            pid <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (KillProcess pid)
+                        64 -> do
+                            tid <- word32be <$> A.take 4
+                            pid <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (AssignThreadToProcess tid pid)
+                        65 -> do
+                            mid <- fromIntegral <$> word16be <$> A.take 2
+                            realtime <- word64be <$> A.take 8
+                            return $ Just $ Event timestamp (CreateMachine mid realtime)
+                        66 -> do
+                            mid <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (KillMachine mid)
+                        67 -> do
+                            tag <- A.anyWord8
+                            sP  <- word32be <$> A.take 4
+                            sT  <- word32be <$> A.take 4
+                            rM  <- word16be <$> A.take 2
+                            rP  <- word32be <$> A.take 4
+                            rIP <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (SendMessage { mesTag = toMsgTag tag,
+                                                 senderProcess = sP,
+                                                 senderThread = sT,
+                                                 receiverMachine = rM,
+                                                 receiverProcess = rP,
+                                                 receiverInport = rIP
+                                               })
+                        68 -> do
+                            tag <- A.anyWord8
+                            rP  <- word32be <$> A.take 4
+                            rIP <- word32be <$> A.take 4
+                            sM  <- word16be <$> A.take 2
+                            sP  <- word32be <$> A.take 4
+                            sT  <- word32be <$> A.take 4
+                            mS  <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (ReceiveMessage { mesTag = toMsgTag tag,
                                                      receiverProcess = rP,
-                                                     receiverInport = rIP
+                                                     receiverInport = rIP,
+                                                     senderMachine = sM,
+                                                     senderProcess = sP,
+                                                     senderThread= sT,
+                                                     messageSize = mS
                                                    })
-                _ -> do --for all event types not yet implemented.
-                        _ <- A.take (fromIntegral s)
-                        return $ Event timestamp (UnknownEvent type_)
-        Nothing -> do
-            case type_ of
-                16 -> do
-                    varDataLength <- word16be <$> A.take 2
-                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Event timestamp (Message varData)
-                19 -> do
-                    varDataLength <- word16be <$> A.take 2
-                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Event timestamp (UserMessage varData)
-                23 -> do
-                    varDataLength <- word16be <$> A.take 2
-                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Event timestamp (Version varData)
-                24 -> do
-                    varDataLength <- word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
-                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Event timestamp (Version varData)
-                29 -> do
-                    varDataLength <- fromIntegral <$> word16be <$> A.take 2
-                    capSet <- word32be <$> A.take 4
-                    varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Event timestamp (RtsIdentifier capSet varData)
-                30 -> do
-                    varDataLength <- fromIntegral <$> word16be <$> A.take 2
-                    capSet <- word32be <$> A.take 4
-                    varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Event timestamp (ProgramArgs capSet (splitNull varData))
-                31 -> do
-                    varDataLength <- fromIntegral <$> word16be <$> A.take 2
-                    capSet <- word32be <$> A.take 4
-                    varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Event timestamp (ProgramEnv capSet (splitNull varData))
-                42 -> do
-                    varDataLength <- fromIntegral <$> word16be <$> A.take 2
-                    string <- C.unpack <$> A.take (varDataLength - 4)
-                    stringId <- word32be <$> A.take 4
-                    return $ Event timestamp (InternString string stringId)
-                44 -> do
-                    varDataLength <- fromIntegral <$> word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
-                    threadId <- word32be <$> A.take 4
-                    varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Event timestamp (ThreadLabel threadId varData)
-                58 -> do
-                    varDataLength <- word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
-                    varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Event timestamp (UserMarker varData)
+                        69 -> do
+                            tag <- A.anyWord8
+                            sP  <- Bin.anyWord32le
+                            sT  <- Bin.anyWord32le
+                            rP  <- Bin.anyWord32le
+                            rIP <- Bin.anyWord32le
+                            return $ Just $ Event timestamp (SendReceiveLocalMessage { mesTag = toMsgTag tag,
+                                                             senderProcess = sP,
+                                                             senderThread = sT,
+                                                             receiverProcess = rP,
+                                                             receiverInport = rIP
+                                                           })
+                        _ -> do --for all event types not yet implemented.
+                                _ <- A.take (fromIntegral s)
+                                return $ Just $ Event timestamp (UnknownEvent type_)
+                Nothing -> do
+                    case type_ of
+                        16 -> do
+                            varDataLength <- word16be <$> A.take 2
+                            varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                            return $ Just $ Event timestamp (Message varData)
+                        19 -> do
+                            varDataLength <- word16be <$> A.take 2
+                            varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                            return $ Just $ Event timestamp (UserMessage varData)
+                        23 -> do
+                            varDataLength <- word16be <$> A.take 2
+                            varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                            return $ Just $ Event timestamp (Version varData)
+                        24 -> do
+                            varDataLength <- word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
+                            varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                            return $ Just $ Event timestamp (Version varData)
+                        29 -> do
+                            varDataLength <- fromIntegral <$> word16be <$> A.take 2
+                            capSet <- word32be <$> A.take 4
+                            varData <- C.unpack <$> A.take (varDataLength - 4)
+                            return $ Just $ Event timestamp (RtsIdentifier capSet varData)
+                        30 -> do
+                            varDataLength <- fromIntegral <$> word16be <$> A.take 2
+                            capSet <- word32be <$> A.take 4
+                            varData <- C.unpack <$> A.take (varDataLength - 4)
+                            return $ Just $ Event timestamp (ProgramArgs capSet (splitNull varData))
+                        31 -> do
+                            varDataLength <- fromIntegral <$> word16be <$> A.take 2
+                            capSet <- word32be <$> A.take 4
+                            varData <- C.unpack <$> A.take (varDataLength - 4)
+                            return $ Just $ Event timestamp (ProgramEnv capSet (splitNull varData))
+                        42 -> do
+                            varDataLength <- fromIntegral <$> word16be <$> A.take 2
+                            string <- C.unpack <$> A.take (varDataLength - 4)
+                            stringId <- word32be <$> A.take 4
+                            return $ Just $ Event timestamp (InternString string stringId)
+                        44 -> do
+                            varDataLength <- fromIntegral <$> word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
+                            threadId <- word32be <$> A.take 4
+                            varData <- C.unpack <$> A.take (varDataLength - 4)
+                            return $ Just $ Event timestamp (ThreadLabel threadId varData)
+                        58 -> do
+                            varDataLength <- word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
+                            varData <- C.unpack <$> A.take (fromIntegral varDataLength)
+                            return $ Just $ Event timestamp (UserMarker varData)
 
-                _ -> do
-                    eventSize  <- word16be <$> A.take 2
-                    _  <- A.take $ fromIntegral eventSize
-                    return $ Event timestamp (UnknownEvent type_)
+                        _ -> do
+                            eventSize  <- word16be <$> A.take 2
+                            _  <- A.take $ fromIntegral eventSize
+                            return $ Just $ Event timestamp (UnknownEvent type_)
 
 {-blatantly copied from GHC.RTS.Eventypes: -}
 type RawThreadStopStatus = Word16
