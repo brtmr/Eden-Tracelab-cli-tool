@@ -36,8 +36,6 @@ type EventTypeSize    = Word16
 
 type Capset = Word32
 type TaskId = Word64
-type ProcessId = Word32
-type MachineId = Word16
 type PortId = ThreadId
 type MessageSize = Word32
 type RawMsgTag = Word8
@@ -45,11 +43,13 @@ type RawMsgTag = Word8
 
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
 
+{-
 main :: IO()
 main = do
     args <- getArgs
     let fn = head args
     run fn
+-}
 
 run :: String -> IO()
 run fn = do
@@ -100,9 +100,7 @@ eventTypeParser = do
 parseEventStream :: SizeTable -> A.Parser [Event]
 parseEventStream st = do
     _ <- A.string $ C.pack "datb"
-    events <- A.many1 (parseEvent st)
     events <- parseEvents st
-    _ <- Bin.word16be 0xFFFF --parse Events until the
     return events
 
 parseEvents :: SizeTable -> A.Parser [Event]
@@ -152,7 +150,7 @@ parseEvent st = do
                         8 -> do --WakeupThread
                                 threadId    <- word32be <$> A.take 4
                                 otherCap    <- word16be <$> A.take 2
-                                return $ Just $ Event timestamp (MigrateThread threadId
+                                return $ Just $ Event timestamp (WakeupThread threadId
                                     (fromIntegral otherCap))
                         9 -> return $ Just $ Event timestamp StartGC
                         10-> return $ Just $ Event timestamp EndGC
@@ -164,8 +162,8 @@ parseEvent st = do
                             return $ Just $ Event timestamp (CreateSparkThread threadId)
                         --16 variable sized
                         17-> do
-                            cap <- fromIntegral <$> word16be <$> A.take 2
-                            return $ Just $ Event timestamp (CapCreate cap)
+                            n_caps <- fromIntegral <$> word16be <$> A.take 2
+                            return $ Just $ Event timestamp (Startup n_caps)
                         18->do
                             blockSize <- word32be <$> A.take 4
                             endTime   <- word64be <$> A.take 8
@@ -363,7 +361,7 @@ parseEvent st = do
                         24 -> do
                             varDataLength <- word16be <$> A.take 2-- Warning: order of fiz and gcd reversed!ord16be
                             varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                            return $ Just $ Event timestamp (Version varData)
+                            return $ Just $ Event timestamp (ProgramInvocation varData)
                         29 -> do
                             varDataLength <- fromIntegral <$> word16be <$> A.take 2
                             capSet <- word32be <$> A.take 4
