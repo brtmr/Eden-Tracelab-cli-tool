@@ -11,7 +11,6 @@ import Bachelor.Types
 import Control.Applicative
 import Control.Exception
 import Control.Lens
-import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
 import Data.Binary.Get
