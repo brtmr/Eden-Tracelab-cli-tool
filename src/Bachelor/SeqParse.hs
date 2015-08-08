@@ -32,9 +32,6 @@ data ParserState = ParserState {
     _p_cap      :: Int            -- the capability we are interested in
         }
 
-chunkSize :: Int
-chunkSize = 0xFFFF --64k chunkSize
-
 $(makeLenses ''ParserState)
 
 filename = "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"

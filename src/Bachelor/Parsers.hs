@@ -338,6 +338,7 @@ parseEvent st = do
                                                      receiverProcess = rP,
                                                      receiverInport = rIP
                                                    })
+                {- from here on variable sized. -}
                 16 -> do
                     varDataLength <- word16be <$> A.take 2
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
