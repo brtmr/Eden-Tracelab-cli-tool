@@ -11,13 +11,8 @@ import Bachelor.Types
 import Control.Applicative
 import Control.Exception
 import Control.Lens
-import Control.Monad.Reader
-import Control.Monad.State
-import Data.Binary.Get
 import Data.ByteString.Lazy as LB (readFile, ByteString)
-import Data.IntMap (IntMap)
 import Data.Word
-import GHC.Arr
 import GHC.RTS.Events
 import qualified Data.Attoparsec.ByteString.Lazy as AL
 import qualified Data.HashMap.Strict as M
