@@ -29,14 +29,6 @@ type RawMsgTag = Word8
 
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
 
-{-
-main :: IO()
-main = do
-    args <- getArgs
-    let fn = head args
-    run fn
--}
-
 run :: String -> IO()
 run fn = do
     bs <- B.readFile fn
@@ -44,12 +36,6 @@ run fn = do
         (A.Fail i sl s) -> putStrLn $ "parse failed " ++ show sl ++ " " ++ s ++ (show (B.take 100 i))
         A.Partial{}     -> putStrLn "partial"
         (A.Done i (EventLog _ (Data a)))    -> putStrLn $ "Done. " ++ (show $ length a)
-
-{-
-instance Eq Event where
-    (==) (Event t1 (EventBlock _ _ _)) (Event t2 (EventBlock _ _ _)) = t1==t2
-    (==) (Event t1 spec1) (Event t2 spec2) = t1 == t2 && spec1 == spec2
--}
 
 eventLogParser :: A.Parser EventLog
 eventLogParser = do
@@ -117,11 +103,11 @@ parseEvent st = do
                 2 -> do -- StopThread
                         threadId <- U.parseW32
                         blockreason <- U.parseW16
-                        _ <- U.parseW32
-                            -- used in older ghcs by BlockedOnBlackHoleOwnedBy
-                            -- ignored here.
+                        i <- U.parseW32
                         return $ Just $ Event timestamp (StopThread threadId
-                                (mkStopStatus blockreason))
+                                (if (blockreason==8)
+                                    then (BlockedOnBlackHoleOwnedBy i)
+                                    else (mkStopStatus blockreason)))
                 3 -> do -- ThreadRunnable
                         threadId <- U.parseW32
                         return $ Just $ Event timestamp (ThreadRunnable threadId)
