@@ -1,4 +1,8 @@
+{-# LANGUAGE CPP,BangPatterns,PatternGuards #-}
+{-# OPTIONS_GHC -funbox-strict-fields -fwarn-incomplete-patterns #-}
 module Bachelor.Parsers where
+
+import Debug.Trace
 
 import GHC.RTS.Events
 import qualified Data.Attoparsec.ByteString as A
@@ -13,6 +17,7 @@ import Control.Applicative
 import Data.Bits
 import System.Environment
 import Bachelor.Util as U
+import qualified Data.Array.IArray as IA
 
 -- copy/pasted from GHC.RTS.EventTypes, because these are not exported.
 type EventTypeNum     = Word16
@@ -28,6 +33,7 @@ type RawMsgTag = Word8
 
 
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
+type ParserTable = IA.Array Word16 (Word64 -> A.Parser Event)
 
 run :: String -> IO()
 run fn = do
@@ -40,12 +46,28 @@ run fn = do
 eventLogParser :: A.Parser EventLog
 eventLogParser = do
     eventLogHeader <- headerParser
-    let sizeTable = mkSizeTable eventLogHeader
-    events <- parseEventStream sizeTable
+    let parserTable = mkParserTable eventLogHeader
+    events <- parseEventStream parserTable
     return $ EventLog eventLogHeader (Data events)
 
 mkSizeTable :: Header -> SizeTable
 mkSizeTable h = foldr (\e m -> M.insert (num e) (size e) m) M.empty (eventTypes h)
+
+mkParserTable :: Header -> ParserTable
+mkParserTable h = IA.array (0,100) $ foldr addToList knownParsers (eventTypes h)
+    where addToList :: EventType -> [(Word16, Word64 -> A.Parser Event)] -> [(Word16, Word64 -> A.Parser Event)]
+          addToList (EventType id_ _ s) list = if (null $ filter (\x -> fst x == id_) list)
+            then (id_ , makeUnknownParser id_ s) : (filter (\x -> fst x /= id_) list)
+            else list
+
+makeUnknownParser :: EventTypeNum -> Maybe EventTypeSize -> (Word64 -> A.Parser Event)
+makeUnknownParser id_ (Just s) = (\timestamp -> do
+    _ <- A.take (fromIntegral s)
+    return $ Event timestamp (UnknownEvent id_))
+makeUnknownParser id_ Nothing = (\timestamp -> do
+    eventSize  <- U.parseW16
+    _  <- A.take $ fromIntegral eventSize
+    return $ Event timestamp (UnknownEvent id_))
 
 headerParser :: A.Parser Header
 headerParser = do
@@ -69,103 +91,106 @@ eventTypeParser = do
     let v = eventTypeSize == 0xFFFF
     return $ EventType id_ (C.unpack name) (if v then Nothing else Just eventTypeSize)
 
-parseEventStream :: SizeTable -> A.Parser [Event]
+parseEventStream :: ParserTable -> A.Parser [Event]
 parseEventStream st = do
     _ <- A.string $ C.pack "datb"
     events <- parseEvents st
     return events
 
-parseEvents :: SizeTable -> A.Parser [Event]
-parseEvents st = do
-    event <- parseEvent st
-    case event of
-        Nothing -> return []
-        (Just e)  -> do
-            restEvents <- parseEvents st
-            return $ e : restEvents
-
--- parses relevant Events, skips otherwise
--- This parser is not compatible with eventlogs created wtype Capset   = Word32
-parseEvent :: SizeTable -> A.Parser (Maybe Event)
-parseEvent st = do
-    type_     <- U.parseW16 -- the type (spec) of the event
-    if (type_==0xFFFF)
-        then return Nothing
+parseEvents :: ParserTable -> A.Parser [Event]
+parseEvents pt = do
+    type_ <- U.parseW16
+    if (type_ == 0xFFFF) then return []
         else do
             timestamp <- U.parseW64 -- the timestamp
-            case type_ of
-                0 -> do -- CreateThread
+            event <- (pt IA.! type_) timestamp
+            rest <- parseEvents pt
+            return $ event : rest
+
+parseSingleEvent :: ParserTable -> A.Parser (Maybe Event)
+parseSingleEvent pt = do
+    type_ <- U.parseW16
+    if (type_ == 0xFFFF)
+        then return $ Nothing
+        else do
+            timestamp <- U.parseW64 -- the timestamp
+            event     <- (pt IA.! type_) timestamp
+            return $ Just event
+
+knownParsers :: [(Word16, Word64 -> A.Parser Event)]
+knownParsers = [ (0, (\timestamp -> do -- CreateThread
                         threadId <- U.parseW32
-                        return $ Just $ Event timestamp (CreateThread threadId)
-                1 -> do -- RunThread
+                        return $ Event timestamp (CreateThread threadId))),
+
+                (1, (\timestamp -> do -- RunThread
                         threadId <- U.parseW32
-                        return $ Just $ Event timestamp (RunThread threadId)
-                2 -> do -- StopThread
+                        return $  Event timestamp (RunThread threadId))),
+                (2, (\timestamp -> do -- StopThread
                         threadId <- U.parseW32
                         blockreason <- U.parseW16
                         i <- U.parseW32
-                        return $ Just $ Event timestamp (StopThread threadId
+                        return $  Event timestamp (StopThread threadId
                                 (if (blockreason==8)
                                     then (BlockedOnBlackHoleOwnedBy i)
-                                    else (mkStopStatus blockreason)))
-                3 -> do -- ThreadRunnable
+                                    else (mkStopStatus blockreason))))),
+                (3, (\timestamp -> do -- ThreadRunnable
                         threadId <- U.parseW32
-                        return $ Just $ Event timestamp (ThreadRunnable threadId)
-                4 -> do -- MigrateThread
+                        return $  Event timestamp (ThreadRunnable threadId))),
+                (4, (\timestamp -> do -- MigrateThread
                         threadId <- U.parseW32
                         capId    <- fromIntegral <$> U.parseW16
-                        return $ Just $ Event timestamp (MigrateThread threadId capId)
+                        return $  Event timestamp (MigrateThread threadId capId))),
                 --5-7 deprecated
-                8 -> do --WakeupThread
+                (8, (\timestamp -> do --WakeupThread
                         threadId    <- U.parseW32
                         otherCap    <- U.parseW16
-                        return $ Just $ Event timestamp (WakeupThread threadId
-                            (fromIntegral otherCap))
-                9 -> return $ Just $ Event timestamp StartGC
-                10-> return $ Just $ Event timestamp EndGC
-                11-> return $ Just $ Event timestamp RequestSeqGC
-                12-> return $ Just $ Event timestamp RequestParGC
+                        return $  Event timestamp (WakeupThread threadId
+                            (fromIntegral otherCap)))),
+                (9, (\timestamp -> return $  Event timestamp StartGC)),
+                (10, (\timestamp -> return $  Event timestamp EndGC)),
+                (11, (\timestamp -> return $  Event timestamp RequestSeqGC)),
+                (12, (\timestamp -> return $  Event timestamp RequestParGC)),
                 --13/14 deprecated
-                15-> do
+                (15, (\timestamp -> do
                     threadId <-U.parseW32
-                    return $ Just $ Event timestamp (CreateSparkThread threadId)
+                    return $  Event timestamp (CreateSparkThread threadId))),
                 --16 variable sized
-                17-> do
+                (17, (\timestamp -> do
                     n_caps <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (Startup n_caps)
-                18->do
+                    return $  Event timestamp (Startup n_caps))),
+                (18, (\timestamp ->do
                     blockSize <- U.parseW32
                     endTime   <- U.parseW64
                     cap       <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (EventBlock timestamp cap [])
-                20-> return $ Just $ Event timestamp GCIdle
-                21-> return $ Just $ Event timestamp GCWork
-                22-> return $ Just $ Event timestamp GCDone
-                25-> do
+                    return $  Event timestamp (EventBlock timestamp cap []))),
+                (20, (\timestamp -> return $  Event timestamp GCIdle)),
+                (21, (\timestamp -> return $  Event timestamp GCWork)),
+                (22, (\timestamp -> return $  Event timestamp GCDone)),
+                (25, (\timestamp -> do
                     capSet <- U.parseW32
                     capSetTypeId <-U.parseW16
                     let capSetType = mkCapsetType capSetTypeId
-                    return $ Just $ Event timestamp (CapsetCreate capSet capSetType)
-                26-> do
+                    return $  Event timestamp (CapsetCreate capSet capSetType))),
+                (26, (\timestamp -> do
                     capSet <- U.parseW32
-                    return $ Just $ Event timestamp (CapsetDelete capSet)
-                27-> do
-                    capSet <- U.parseW32
-                    cap    <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapsetAssignCap capSet cap)
-                28 -> do
+                    return $  Event timestamp (CapsetDelete capSet))),
+                (27, (\timestamp -> do
                     capSet <- U.parseW32
                     cap    <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapsetRemoveCap capSet cap)
-                32 -> do
+                    return $  Event timestamp (CapsetAssignCap capSet cap))),
+                (28, (\timestamp -> do
+                    capSet <- U.parseW32
+                    cap    <- fromIntegral <$> U.parseW16
+                    return $  Event timestamp (CapsetRemoveCap capSet cap))),
+                (32, (\timestamp -> do
                     capSet <- U.parseW32
                     pid    <- U.parseW32
-                    return $ Just $ Event timestamp (OsProcessPid capSet pid)
-                33 -> do
+                    return $  Event timestamp (OsProcessPid capSet pid))),
+                (33, (\timestamp -> do
                     capSet <- U.parseW32
                     pid    <- U.parseW32
-                    return $ Just $ Event timestamp (OsProcessParentPid capSet pid)
-                34 -> do
+                    return $  Event timestamp (OsProcessParentPid capSet pid))),
+                (34, (\timestamp -> do
                     crt <- U.parseW64
                     dud <- U.parseW64
                     ovf <- U.parseW64
@@ -173,58 +198,58 @@ parseEvent st = do
                     gcd <- U.parseW64
                     fiz <- U.parseW64
                     rem <- U.parseW64
-                    return $ Just $ Event timestamp SparkCounters{sparksCreated    = crt, sparksDud       = dud,
+                    return $  Event timestamp SparkCounters{sparksCreated    = crt, sparksDud       = dud,
                                          sparksOverflowed = ovf, sparksConverted = cnv,
                                          sparksFizzled    = fiz, sparksGCd       = gcd,
-                                         sparksRemaining  = rem}
-                35-> return $ Just $ Event timestamp SparkCreate
-                36-> return $ Just $ Event timestamp SparkDud
-                37-> return $ Just $ Event timestamp SparkOverflow
-                38-> return $ Just $ Event timestamp SparkRun
-                39-> do
+                                         sparksRemaining  = rem})),
+                (35, (\timestamp -> return $  Event timestamp SparkCreate)),
+                (36, (\timestamp -> return $  Event timestamp SparkDud)),
+                (37, (\timestamp -> return $  Event timestamp SparkOverflow)),
+                (38, (\timestamp -> return $  Event timestamp SparkRun)),
+                (39, (\timestamp -> do
                     vic <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (SparkSteal vic)
-                40-> return $ Just $ Event timestamp SparkFizzle
-                41-> return $ Just $ Event timestamp SparkGC
-                43-> do
+                    return $  Event timestamp (SparkSteal vic))),
+                (40, (\timestamp -> return $  Event timestamp SparkFizzle)),
+                (41, (\timestamp -> return $  Event timestamp SparkGC)),
+                (43, (\timestamp -> do
                     capSet <- U.parseW32
                     unixEpoch <- U.parseW64
                     nanoseconds <- U.parseW32
-                    return $ Just $ Event timestamp (WallClockTime capSet unixEpoch nanoseconds)
-                45 -> do
+                    return $  Event timestamp (WallClockTime capSet unixEpoch nanoseconds))),
+                (45, (\timestamp -> do
                     cap <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapCreate cap)
-                46 -> do
+                    return $  Event timestamp (CapCreate cap))),
+                (46, (\timestamp -> do
                     cap <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapDelete cap)
-                47 -> do
+                    return $  Event timestamp (CapDelete cap))),
+                (47, (\timestamp -> do
                     cap <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapDisable cap)
-                48 -> do
+                    return $  Event timestamp (CapDisable cap))),
+                (48, (\timestamp -> do
                     cap <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (CapEnable cap)
-                49 -> do
+                    return $  Event timestamp (CapEnable cap))),
+                (49, (\timestamp -> do
                     cap <- U.parseW32
                     bytes <- U.parseW64
-                    return $ Just $ Event timestamp (HeapAllocated cap bytes)
-                50 -> do
+                    return $  Event timestamp (HeapAllocated cap bytes))),
+                (50, (\timestamp -> do
                     cap <- U.parseW32
                     bytes <- U.parseW64
-                    return $ Just $ Event timestamp (HeapSize cap bytes)
-                51 -> do
+                    return $  Event timestamp (HeapSize cap bytes))),
+                (51, (\timestamp -> do
                     cap <- U.parseW32
                     bytes <- U.parseW64
-                    return $ Just $ Event timestamp (HeapLive cap bytes)
-                52 -> do
+                    return $  Event timestamp (HeapLive cap bytes))),
+                (52, (\timestamp -> do
                     cap <- U.parseW32
                     gens <- fromIntegral <$> U.parseW16
                     maxHeapSize   <- U.parseW64
                     allocAreaSize <- U.parseW64
                     mblockSize    <- U.parseW64
                     blockSize     <- U.parseW64
-                    return $ Just $ Event timestamp (HeapInfoGHC cap gens maxHeapSize
-                        allocAreaSize mblockSize blockSize)
-                53 -> do
+                    return $  Event timestamp (HeapInfoGHC cap gens maxHeapSize
+                        allocAreaSize mblockSize blockSize))),
+                (53, (\timestamp -> do
                     heapCapset   <- U.parseW32
                     gen          <- fromIntegral <$> U.parseW16
                     copied       <- U.parseW64
@@ -233,56 +258,56 @@ parseEvent st = do
                     parNThreads  <- fromIntegral <$> U.parseW32
                     parMaxCopied <- U.parseW64
                     parTotCopied <- U.parseW64
-                    return $ Just $ Event timestamp (GCStatsGHC heapCapset gen
-                        copied slop frag parNThreads parMaxCopied parTotCopied)
-                54 -> return $ Just $ Event timestamp GlobalSyncGC
-                55 -> do
+                    return $  Event timestamp (GCStatsGHC heapCapset gen
+                        copied slop frag parNThreads parMaxCopied parTotCopied))),
+                (54, (\timestamp -> return $  Event timestamp GlobalSyncGC)),
+                (55, (\timestamp -> do
                     taskId <- U.parseW64
                     cap    <- fromIntegral <$> U.parseW16
                     tid    <- U.parseW64
-                    return $ Just $ Event timestamp (TaskCreate taskId cap (KernelThreadId tid))
-                56 -> do
+                    return $  Event timestamp (TaskCreate taskId cap (KernelThreadId tid)))),
+                (56, (\timestamp -> do
                     taskId <- U.parseW64
                     cap    <- fromIntegral <$> U.parseW16
                     capNew <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (TaskMigrate taskId cap capNew)
-                57 -> do
+                    return $  Event timestamp (TaskMigrate taskId cap capNew))),
+                (57, (\timestamp -> do
                     taskId <- U.parseW64
-                    return $ Just $ Event timestamp (TaskDelete taskId)
-                60 -> return $ Just $ Event timestamp EdenStartReceive
-                61 -> return $ Just $ Event timestamp EdenEndReceive
-                62 -> do
+                    return $  Event timestamp (TaskDelete taskId))),
+                (60, (\timestamp -> return $  Event timestamp EdenStartReceive)),
+                (61, (\timestamp -> return $  Event timestamp EdenEndReceive)),
+                (62, (\timestamp -> do
                     pid <- U.parseW32
-                    return $ Just $ Event timestamp (CreateProcess pid)
-                63 -> do
+                    return $  Event timestamp (CreateProcess pid))),
+                (63, (\timestamp -> do
                     pid <- U.parseW32
-                    return $ Just $ Event timestamp (KillProcess pid)
-                64 -> do
+                    return $  Event timestamp (KillProcess pid))),
+                (64, (\timestamp -> do
                     tid <- U.parseW32
                     pid <- U.parseW32
-                    return $ Just $ Event timestamp (AssignThreadToProcess tid pid)
-                65 -> do
+                    return $  Event timestamp (AssignThreadToProcess tid pid))),
+                (65, (\timestamp -> do
                     mid <- fromIntegral <$> U.parseW16
                     realtime <- U.parseW64
-                    return $ Just $ Event timestamp (CreateMachine mid realtime)
-                66 -> do
+                    return $  Event timestamp (CreateMachine mid realtime))),
+                (66, (\timestamp -> do
                     mid <- fromIntegral <$> U.parseW16
-                    return $ Just $ Event timestamp (KillMachine mid)
-                67 -> do
+                    return $  Event timestamp (KillMachine mid))),
+                (67, (\timestamp -> do
                     tag <- A.anyWord8
                     sP  <- U.parseW32
                     sT  <- U.parseW32
                     rM  <- U.parseW16
                     rP  <- U.parseW32
                     rIP <- U.parseW32
-                    return $ Just $ Event timestamp (SendMessage { mesTag = toMsgTag tag,
+                    return $  Event timestamp (SendMessage { mesTag = toMsgTag tag,
                                          senderProcess = sP,
                                          senderThread = sT,
                                          receiverMachine = rM,
                                          receiverProcess = rP,
                                          receiverInport = rIP
-                                       })
-                68 -> do
+                                       }))),
+                (68, (\timestamp -> do
                     tag <- A.anyWord8
                     rP  <- U.parseW32
                     rIP <- U.parseW32
@@ -290,86 +315,73 @@ parseEvent st = do
                     sP  <- U.parseW32
                     sT  <- U.parseW32
                     mS  <- U.parseW32
-                    return $ Just $ Event timestamp (ReceiveMessage { mesTag = toMsgTag tag,
+                    return $  Event timestamp (ReceiveMessage { mesTag = toMsgTag tag,
                                              receiverProcess = rP,
                                              receiverInport = rIP,
                                              senderMachine = sM,
                                              senderProcess = sP,
                                              senderThread= sT,
                                              messageSize = mS
-                                           })
-                69 -> do
+                                           }))),
+                (69, (\timestamp -> do
                     tag <- A.anyWord8
                     sP  <- U.parseW32
                     sT  <- U.parseW32
                     rP  <- U.parseW32
                     rIP <- U.parseW32
-                    return $ Just $ Event timestamp (SendReceiveLocalMessage { mesTag = toMsgTag tag,
+                    return $  Event timestamp (SendReceiveLocalMessage { mesTag = toMsgTag tag,
                                                      senderProcess = sP,
                                                      senderThread = sT,
                                                      receiverProcess = rP,
                                                      receiverInport = rIP
-                                                   })
+                                                   }))),
                 {- from here on variable sized. -}
-                16 -> do
+                (16, (\timestamp -> do
                     varDataLength <- U.parseW16
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Just $ Event timestamp (Message varData)
-                19 -> do
+                    return $  Event timestamp (Message varData))),
+                (19, (\timestamp -> do
                     varDataLength <- U.parseW16
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Just $ Event timestamp (UserMessage varData)
-                23 -> do
+                    return $  Event timestamp (UserMessage varData))),
+                (23, (\timestamp -> do
                     varDataLength <- U.parseW16
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Just $ Event timestamp (Version varData)
-                24 -> do
+                    return $  Event timestamp (Version varData))),
+                (24, (\timestamp -> do
                     varDataLength <- U.parseW16-- Warning: order of fiz and gcd reversed!ord16be
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Just $ Event timestamp (ProgramInvocation varData)
-                29 -> do
+                    return $  Event timestamp (ProgramInvocation varData))),
+                (29, (\timestamp -> do
                     varDataLength <- fromIntegral <$> U.parseW16
                     capSet <- U.parseW32
                     varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Just $ Event timestamp (RtsIdentifier capSet varData)
-                30 -> do
+                    return $  Event timestamp (RtsIdentifier capSet varData))),
+                (30, (\timestamp -> do
                     varDataLength <- fromIntegral <$> U.parseW16
                     capSet <- U.parseW32
                     varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Just $ Event timestamp (ProgramArgs capSet (splitNull varData))
-                31 -> do
+                    return $  Event timestamp (ProgramArgs capSet (splitNull varData)))),
+                (31, (\timestamp -> do
                     varDataLength <- fromIntegral <$> U.parseW16
                     capSet <- U.parseW32
                     varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Just $ Event timestamp (ProgramEnv capSet (splitNull varData))
-                42 -> do
+                    return $  Event timestamp (ProgramEnv capSet (splitNull varData)))),
+                (42, (\timestamp -> do
                     varDataLength <- fromIntegral <$> U.parseW16
                     string <- C.unpack <$> A.take (varDataLength - 4)
                     stringId <- U.parseW32
-                    return $ Just $ Event timestamp (InternString string stringId)
-                44 -> do
+                    return $  Event timestamp (InternString string stringId))),
+                (44, (\timestamp -> do
                     varDataLength <- fromIntegral <$> U.parseW16-- Warning: order of fiz and gcd reversed!ord16be
                     threadId <- U.parseW32
                     varData <- C.unpack <$> A.take (varDataLength - 4)
-                    return $ Just $ Event timestamp (ThreadLabel threadId varData)
-                58 -> do
+                    return $  Event timestamp (ThreadLabel threadId varData))),
+                (58, (\timestamp -> do
                     varDataLength <- U.parseW16-- Warning: order of fiz and gcd reversed!ord16be
                     varData <- C.unpack <$> A.take (fromIntegral varDataLength)
-                    return $ Just $ Event timestamp (UserMarker varData)
-
-                -- UnknownEvent
-                _ -> do
-                    let maybeSize = st M.! type_ --lookup the size of the event in the table
-                    case maybeSize of
-                        -- Unknown and fixed
-                        (Just s) -> do
-                            _ <- A.take (fromIntegral s)
-                            return $ Just $ Event timestamp (UnknownEvent type_)
-                        -- Unknown and variable
-                        Nothing -> do
-                            eventSize  <- U.parseW16
-                            _  <- A.take $ fromIntegral eventSize
-                            return $ Just $ Event timestamp (UnknownEvent type_)
+                    return $  Event timestamp (UserMarker varData)))
+                         ]
 
 {-blatantly copied from GHC.RTS.Eventypes: -}
 type RawThreadStopStatus = Word16
