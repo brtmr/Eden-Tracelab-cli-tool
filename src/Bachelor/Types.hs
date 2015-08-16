@@ -15,12 +15,18 @@ import GHC.RTS.Events (ThreadId, MachineId, ProcessId, Timestamp)
 
 type Time = Word64
 
-type ThreadMap  = M.HashMap ThreadId  (RunState, Timestamp)
-type ProcessMap = M.HashMap ProcessId (RunState, Timestamp, [ThreadId ])
-type MachineMap = M.HashMap MachineId (RunState, Timestamp, [ProcessId])
+type ProcessState = (RunState, Timestamp, [ThreadId])
+type MachineState = (RunState, Timestamp, [ProcessId])
+type ThreadState  = (RunState, Timestamp)
+
+type ThreadMap    = M.HashMap ThreadId ThreadState
+type ProcessMap   = M.HashMap ProcessId ProcessState
+type MachineMap   = M.HashMap MachineId MachineState
 
 data RunState = Idle | Running | Blocked | Runnable
     deriving (Show, Eq)
+
+
 type RTSState = (MachineMap, ProcessMap, ThreadMap)
 
 data MtpType = Machine MachineId | Process ProcessId | Thread ThreadId deriving Show
@@ -58,7 +64,20 @@ threadInState rts@(_,_,threadMap) state tid = case threadMap M.! tid of
 -- when the state of a thread has been changed, check the processes need to
 -- be changed.
 
---setProcessState :: RTSState
+-- The Timestamp is the stamp of the most current event.
+adjustProcessState :: RTSState -> Timestamp ->  RTSState
+adjustProcessState rts@(machines, processes, threads) ts =
+    (machines, M.map (adjustSingleProcess rts) processes, threads)
+
+adjustSingleProcess :: RTSState -> ProcessState -> ProcessState
+adjustSingleProcess rts pstate@(state,ts,threads)
+    -- if at least one thread is running, this process is running.
+    | oneThreadInState rts Running  threads = (Running,ts,threads)
+    -- if at least one process is runnable, this thread is runnable.
+    | oneThreadInState rts Runnable threads = (Runnable,ts,threads)
+    -- if all threads are Blocked, the process is Blocked.
+    | threadsInState   rts Blocked  threads = (Blocked,ts,threads)
+    | otherwise                             = pstate
 
 
 {-  -}
