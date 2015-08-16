@@ -15,6 +15,7 @@ cabal.sandbox.config
 *.aux
 *.hp
 *.swp
+*.swn
 src/*.swp
 *.swo
 seqparse.tar.gz
