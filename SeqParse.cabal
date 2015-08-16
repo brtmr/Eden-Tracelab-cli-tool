@@ -76,7 +76,8 @@ library
                        attoparsec,
                        attoparsec-binary,
                        lens,
-                       array == 0.5.0.0
+                       array == 0.5.0.0,
+                       postgresql-simple == 0.4.1.0
 
   -- Directories containing source files.
   hs-source-dirs:      src
