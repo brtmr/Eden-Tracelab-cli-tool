@@ -46,8 +46,8 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 extra-source-files: src/Bachelor/fastconvert.h
-
 library
+  ghc-options: -O2
   extra-lib-dirs: "/home/basti/bachelor/seqparse/lib/"
   extra-libraries: fastconvert
   
@@ -75,7 +75,8 @@ library
                        mtl,
                        attoparsec,
                        attoparsec-binary,
-                       lens
+                       lens,
+                       array == 0.5.0.0
 
   -- Directories containing source files.
   hs-source-dirs:      src
