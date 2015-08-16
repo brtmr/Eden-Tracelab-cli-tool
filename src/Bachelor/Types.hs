@@ -77,11 +77,10 @@ adjustSingleProcess rts pstate@(state,ts,threads)
     | oneThreadInState rts Runnable threads = (Runnable,ts,threads)
     -- if all threads are Blocked, the process is Blocked.
     | threadsInState   rts Blocked  threads = (Blocked,ts,threads)
+    -- otherwise, keep the state
     | otherwise                             = pstate
 
-
-{-  -}
-
+{- Types for events that can be written to the database. -}
 data GUIEvent = GUIEvent{
     mtpType   :: MtpType,
     startTime :: Word64,
@@ -99,4 +98,10 @@ class IOEventData a where
         -> IO [GUIEvent]
     -- | writes a single Event to Disk
     writeEvent :: IOEventData a => a -> GUIEvent -> IO()
+
+{- auxiliary functions for detecting wether the state has changed, and
+ - which events need to be written out to the database -}
+
+generateGUIEvents :: RTSState -> RTSState -> [GUIEvent]
+generateGUIEvents oldRts newRts = undefined
 

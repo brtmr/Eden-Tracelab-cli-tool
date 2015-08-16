@@ -31,7 +31,6 @@ type PortId = ThreadId
 type MessageSize = Word32
 type RawMsgTag = Word8
 
-
 type SizeTable = M.HashMap EventTypeNum (Maybe EventTypeSize)
 type ParserTable = IA.Array Word16 (Word64 -> A.Parser Event)
 

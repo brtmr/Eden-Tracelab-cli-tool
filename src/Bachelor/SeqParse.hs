@@ -65,6 +65,26 @@ threadLens  t_id = p_rtsState._3.(at t_id)
     Some do create GUIEvents, so they return (ParserState,[GUIEvent])
 -}
 
+-- the following events can directly produce an event, WITHOUT producing
+-- additional events:
+
+-- CreateMachine
+-- CreateProcess
+-- CreateThread
+-- AssignThreadToProcess
+-- Startup (not sure wether we need this at all.)
+-- EdenStartReceive
+-- EdenEndReceive
+-- SendMessage
+-- ReceiveMessage
+-- SendReceiveLocalMessage
+
+-- these events might generate additional events, so we have to check after
+-- WakeupThread (might wake up the process & machine.)
+-- StopThread   (might stop the process & machine.)
+-- KillProcess  (kill all threads)
+-- KillMachine  (kill all Processes)
+
 createMachineHandler :: ParserState -> MachineId -> Timestamp -> ParserState
 createMachineHandler pstate m_id t =
     set (machineLens m_id) (Just (Idle,t,[])) pstate
@@ -86,3 +106,4 @@ assignThreadToProcessHandler pstate t_id p_id = (newstate, [assign])
 -- kill the Process, and all its threads.
 killProcessHandler :: ParserState -> ProcessId -> (ParserState,[GUIEvent])
 killProcessHandler pstate p_id = undefined
+
