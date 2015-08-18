@@ -6,6 +6,8 @@ module Bachelor.SeqParse (parse, ParserState) where
 #include "EventLogFormat.h"
 
 import Bachelor.Parsers
+import qualified Bachelor.DataBase as DB
+import qualified Database.PostgreSQL.Simple as PG
 import qualified Bachelor.Util as U
 import Bachelor.Types
 import Control.Lens
@@ -19,8 +21,9 @@ import qualified System.IO as IO
 data ParserState = ParserState {
     _p_bs       :: LB.ByteString, -- the file we are reading from
     _p_rtsState :: RTSState,      -- the inner state of the runtime
-    _p_st       :: ParserTable,   -- event types and their parsers
-    _p_cap      :: Int            -- the capability we are interested in
+    _p_pt       :: ParserTable,   -- event types and their parsers
+    _p_cap      :: Int,           -- the capability we are interested in
+    _p_con      :: PG.Connection
         }
 
 $(makeLenses ''ParserState)
@@ -34,6 +37,8 @@ parse :: FilePath -- ^ Path to the *.Eventlog file.
     -> IO ()
 parse file
     n = do
+    --open the DataBase Connection
+    con <- DB.mkConnection
     bs <- LB.readFile file
     -- read the Header
     case (AL.parse headerParser bs) of
@@ -41,20 +46,25 @@ parse file
         (AL.Done bsrest header) -> do
             let pt     = mkParserTable header
                 bsdata = LB.drop 4 bsrest
-            putStrLn $ show $ (LB.take 10 bsrest)
-            putStrLn $ show $ (LB.take 10 bsdata)
-            handleEvents 0 pt bsdata
+            let state = ParserState {
+                _p_bs       = bsdata,
+                _p_rtsState = startingState,
+                _p_cap      = n,
+                _p_con      = con,
+                _p_pt       = pt
+                }
+            handleEvents state
 
-handleEvents :: Int -> ParserTable -> LB.ByteString -> IO()
-handleEvents counter pt bs = do
-    let s = AL.parse (parseSingleEvent pt) bs
+handleEvents :: ParserState -> IO()
+handleEvents ps = do
+    let s = AL.parse (parseSingleEvent (ps^.p_pt)) (ps^.p_bs)
     case s of
-        AL.Fail{}                 -> error ("Failed parsing Events "
-            ++ show counter ++ show bs)
-        (AL.Done bsrest (Just _))  -> do
-            handleEvents (counter+1) pt bsrest
+        AL.Fail{}                 -> error "Failed parsing Events "
+        (AL.Done bsrest (Just e))  -> do
+            putStrLn $ show e
+            handleEvents (ps {_p_bs = bsrest})
         (AL.Done bsrest Nothing)  -> do
-            putStrLn $ show $ counter
+            putStrLn $ show $ "Done."
 
 machineLens m_id = p_rtsState._1.(at m_id)
 processLens p_id = p_rtsState._2.(at p_id)
