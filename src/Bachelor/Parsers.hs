@@ -4,20 +4,20 @@ module Bachelor.Parsers where
 
 import Debug.Trace
 
-import GHC.RTS.Events
-import qualified Data.Attoparsec.ByteString as A
-import qualified Data.Attoparsec.Binary as Bin
-import qualified Data.HashMap.Strict as M
-import Data.Word
-import qualified Data.ByteString as B
-import qualified Data.ByteString.Unsafe as B
-import qualified Data.ByteString.Char8 as C
-import Data.Maybe
+import Bachelor.Util as U
 import Control.Applicative
 import Data.Bits
+import Data.Maybe
+import Data.Word
+import GHC.RTS.Events
 import System.Environment
-import Bachelor.Util as U
 import qualified Data.Array.IArray as IA
+import qualified Data.Attoparsec.Binary as Bin
+import qualified Data.Attoparsec.ByteString as A
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Char8 as C
+import qualified Data.ByteString.Unsafe as B
+import qualified Data.HashMap.Strict as M
 
 -- copy/pasted from GHC.RTS.EventTypes, because these are not exported.
 type EventTypeNum     = Word16
