@@ -26,8 +26,10 @@ mkConnection = connect myConnectInfo
 -- threads within the current trace.
 
 data DBInfo = DBInfo {
+    db_traceId    :: Int,
     db_machines   :: M.HashMap MachineId Int,
     db_processes  :: M.HashMap (MachineId,ProcessId) Int,
     db_threads    :: M.HashMap (MachineId,ProcessId,ThreadId) Int,
     db_connection :: Connection
     }
+
