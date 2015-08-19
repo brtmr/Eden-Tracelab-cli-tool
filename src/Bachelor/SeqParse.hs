@@ -65,10 +65,12 @@ handleEvents ps = do
             handleEvents (ps {_p_bs = bsrest})
         (AL.Done bsrest Nothing)  -> do
             putStrLn $ show $ "Done."
-
+{-
 machineLens m_id = p_rtsState._1.(at m_id)
 processLens p_id = p_rtsState._2.(at p_id)
 threadLens  t_id = p_rtsState._3.(at t_id)
+-}
+
 {-
     Handlers for the different EventTypes.
     Some do not create GUIEvents, so they just return the new ParserState
@@ -95,25 +97,4 @@ threadLens  t_id = p_rtsState._3.(at t_id)
 -- KillProcess  (kill all threads)
 -- KillMachine  (kill all Processes)
 
-createMachineHandler :: ParserState -> MachineId -> Timestamp -> ParserState
-createMachineHandler pstate m_id t =
-    set (machineLens m_id) (Just (Idle,t,[])) pstate
-
-createProcessHandler :: ParserState -> ProcessId -> Timestamp -> ParserState
-createProcessHandler pstate p_id t =
-    set (processLens p_id) (Just (Idle,t,[])) pstate
-
-createThreadHandler :: ParserState -> ThreadId -> Timestamp -> ParserState
-createThreadHandler pstate t_id t =
-    set (threadLens t_id) (Just (Idle,t)) pstate
-
-assignThreadToProcessHandler :: ParserState -> ThreadId -> ProcessId -> (ParserState,[GUIEvent])
-assignThreadToProcessHandler pstate t_id p_id = (newstate, [assign])
-    where newstate = over ((processLens p_id)._Just._3) ((:) t_id) pstate
-          assign   = AssignTtoP t_id p_id
-
--- a Process has been killed.
--- kill the Process, and all its threads.
-killProcessHandler :: ParserState -> ProcessId -> (ParserState,[GUIEvent])
-killProcessHandler pstate p_id = undefined
 
