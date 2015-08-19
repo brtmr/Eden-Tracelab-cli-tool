@@ -34,18 +34,23 @@ data DBInfo = DBInfo {
     db_connection :: Connection
     }
 
+instance Show DBInfo where
+    show dbi =
+            "Trace ID : " ++ (show $ db_traceId dbi) ++ "\n"
+        ++  "Machines:  " ++ (show $ db_machines dbi)
+
 -- when starting to parse a new file, we need to create a new connection,
 -- and then insert a new trace into our list of traces, then store the trace_id
 -- into a new DBInfo value.
 
-traceInsertQuery :: Query
-traceInsertQuery = "Insert Into Traces (filename, creation_date)\
+insertTraceQuery :: Query
+insertTraceQuery = "Insert Into Traces (filename, creation_date)\
     \values( ? , now()) returning trace_id;"
 
 createDBInfo :: FilePath -> IO DBInfo
 createDBInfo file = do
     conn <- mkConnection
-    traceId <- head <$> query conn ("Insert Into Traces (filename, creation_date) values( ? , now()) returning trace_id;") (Only file)
+    traceId <- head <$> query conn insertTraceQuery (Only file)
     case traceId of
         Only id -> do
             putStrLn $ show $ (id :: Int)
@@ -57,6 +62,28 @@ createDBInfo file = do
                 db_connection = conn
                 }
         _       -> error "trace insertion failed"
+
+
+
+insertMachineQuery :: Query
+insertMachineQuery = "Insert Into Machines(num,trace_id)\
+    \values( ? , ? ) returning machine_id;"
+
+
+
+insertMachine :: DBInfo -> MachineId-> IO DBInfo
+insertMachine dbi mid = do
+    let conn     = db_connection dbi
+        traceId = db_traceId    dbi
+    machineId <- head <$> query conn insertMachineQuery (mid, traceId)
+    case machineId of
+        Only id -> do
+            putStrLn $ show $ (id :: Int)
+            return $ dbi {
+                db_machines   = M.insert mid id (db_machines dbi)
+                }
+        _       -> error "trace insertion failed"
+
 
 -- insertion functions for different Events
 insertEvent :: DBInfo -> Event -> IO DBInfo
