@@ -27,35 +27,39 @@ data RunState = Idle | Running | Blocked | Runnable
     deriving (Show, Eq)
 
 
-type RTSState = (MachineMap, ProcessMap, ThreadMap)
+data RTSState = RTSState {
+    machineMap :: MachineMap,
+    processMap :: ProcessMap,
+    threadMap  :: ThreadMap
+    }
 
 data MtpType = Machine MachineId | Process ProcessId | Thread ThreadId deriving Show
 
 startingState :: RTSState
-startingState = (M.empty, M.empty, M.empty)
+startingState = RTSState M.empty M.empty M.empty
 
 {- auxiliary functions for manipulation RTSState -}
 
 --returns a list of blocked Processes
 --a Process is blocked when all its threads are blocked
 processesBlocked :: RTSState -> [ProcessId]
-processesBlocked rts@(_,processes,_) =
+processesBlocked rts =
     map fst $ M.toList $ M.filter
-        (\(_,_,threads) -> threadsInState rts Blocked threads) processes
+        (\(_,_,threads) -> threadsInState rts Blocked threads) (processMap rts)
 
 --given a list of threads, returns wether they are in RunState state.
 threadsInState :: RTSState -> RunState -> [ThreadId] -> Bool
-threadsInState rts@(_,_,threadMap) state threads =
+threadsInState rts state threads =
     all (threadInState rts state) threads
 
 --given a list of threads, returns wether at least one of them is in RunState
 --state.
 oneThreadInState :: RTSState -> RunState -> [ThreadId] -> Bool
-oneThreadInState rts@(_,_,threadMap) state threads =
+oneThreadInState rts state threads =
     any (threadInState rts state) threads
 
 threadInState :: RTSState -> RunState -> ThreadId -> Bool
-threadInState rts@(_,_,threadMap) state tid = case threadMap M.! tid of
+threadInState rts state tid = case (threadMap rts) M.! tid of
             (state,_) -> True
             _ -> False
 
@@ -66,8 +70,10 @@ threadInState rts@(_,_,threadMap) state tid = case threadMap M.! tid of
 
 -- The Timestamp is the stamp of the most current event.
 adjustProcessState :: RTSState -> Timestamp ->  RTSState
-adjustProcessState rts@(machines, processes, threads) ts =
-    (machines, M.map (adjustSingleProcess rts) processes, threads)
+adjustProcessState rts ts =
+    rts {
+        processMap = M.map (adjustSingleProcess rts) (processMap rts)
+        }
 
 adjustSingleProcess :: RTSState -> ProcessState -> ProcessState
 adjustSingleProcess rts pstate@(state,ts,threads)
