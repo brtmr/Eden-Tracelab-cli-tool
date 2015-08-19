@@ -38,12 +38,25 @@ data DBInfo = DBInfo {
 -- and then insert a new trace into our list of traces, then store the trace_id
 -- into a new DBInfo value.
 
-createDBInfo :: FilePath -> IO ()
+traceInsertQuery :: Query
+traceInsertQuery = "Insert Into Traces (filename, creation_date)\
+    \values( ? , now()) returning trace_id;"
+
+createDBInfo :: FilePath -> IO DBInfo
 createDBInfo file = do
     conn <- mkConnection
     traceId <- head <$> query conn ("Insert Into Traces (filename, creation_date) values( ? , now()) returning trace_id;") (Only file)
     case traceId of
-        Only id -> putStrLn $ show $ (id :: Int)
+        Only id -> do
+            putStrLn $ show $ (id :: Int)
+            return $ DBInfo {
+                db_traceId    = id,
+                db_machines   = M.empty,
+                db_processes  = M.empty,
+                db_threads    = M.empty,
+                db_connection = conn
+                }
+        _       -> error "trace insertion failed"
 
 -- insertion functions for different Events
 insertEvent :: DBInfo -> Event -> IO DBInfo
