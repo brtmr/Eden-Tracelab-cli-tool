@@ -115,6 +115,18 @@ insertThread dbi mid pid tid = do
                 }
         _       -> error "machine insertion failed"
 
+insertMachineStateQuery :: Query
+insertMachineStateQuery =
+    "Insert into machine_events(machine_id, starttime, duration, runstate)\
+    \values( ? , ? , ? , ? );"
+
+insertMachineState :: DBInfo -> MachineId -> Timestamp -> Timestamp -> RunState -> IO()
+insertMachineState dbi mid start duration state = do
+    let conn = db_connection dbi
+        machineKey = (db_machines dbi) M.! mid
+    execute conn insertMachineStateQuery (start, duration, state)
+    return ()
+
 -- insertion functions for different Events
 insertEvent :: DBInfo -> Event -> IO DBInfo
 insertEvent dbi (Event ts spec) =
