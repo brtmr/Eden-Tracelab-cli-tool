@@ -27,7 +27,7 @@ mkConnection = connect myConnectInfo
 -- threads within the current trace.
 
 data DBInfo = DBInfo {
-    db_traceId    :: Int,
+    db_traceKey   :: Int,
     db_machines   :: M.HashMap MachineId Int,
     db_processes  :: M.HashMap (MachineId,ProcessId) Int,
     db_threads    :: M.HashMap (MachineId,ProcessId,ThreadId) Int,
@@ -36,7 +36,7 @@ data DBInfo = DBInfo {
 
 instance Show DBInfo where
     show dbi =
-            "Trace ID : " ++ (show $ db_traceId dbi) ++ "\n"
+            "Trace ID : " ++ (show $ db_traceKey dbi) ++ "\n"
         ++  "Machines:  " ++ (show $ db_machines dbi)
 
 -- when starting to parse a new file, we need to create a new connection,
@@ -50,12 +50,12 @@ insertTraceQuery = "Insert Into Traces (filename, creation_date)\
 createDBInfo :: FilePath -> IO DBInfo
 createDBInfo file = do
     conn <- mkConnection
-    traceId <- head <$> query conn insertTraceQuery (Only file)
-    case traceId of
-        Only id -> do
-            putStrLn $ show $ (id :: Int)
+    traceKey <- head <$> query conn insertTraceQuery (Only file)
+    case traceKey of
+        Only key -> do
+            putStrLn $ show $ (key :: Int)
             return $ DBInfo {
-                db_traceId    = id,
+                db_traceKey   = key,
                 db_machines   = M.empty,
                 db_processes  = M.empty,
                 db_threads    = M.empty,
@@ -63,26 +63,42 @@ createDBInfo file = do
                 }
         _       -> error "trace insertion failed"
 
-
-
 insertMachineQuery :: Query
 insertMachineQuery = "Insert Into Machines(num,trace_id)\
     \values( ? , ? ) returning machine_id;"
 
-
-
 insertMachine :: DBInfo -> MachineId-> IO DBInfo
 insertMachine dbi mid = do
     let conn     = db_connection dbi
-        traceId = db_traceId    dbi
-    machineId <- head <$> query conn insertMachineQuery (mid, traceId)
-    case machineId of
-        Only id -> do
-            putStrLn $ show $ (id :: Int)
+        traceKey = db_traceKey   dbi
+    machineKey <- head <$> query conn insertMachineQuery (mid, traceKey)
+    case machineKey of
+        Only key -> do
             return $ dbi {
-                db_machines   = M.insert mid id (db_machines dbi)
+                db_machines   = M.insert mid key (db_machines dbi)
                 }
-        _       -> error "trace insertion failed"
+        _       -> error "machine insertion failed"
+
+insertProcessQuery :: Query
+insertProcessQuery =
+    "Insert Into Processes(num,machine_id)\
+        \values( ? , ? ) returning process_id;"
+
+insertProcess :: DBInfo -> MachineId -> ProcessId -> IO DBInfo
+insertProcess dbi mid pid = do
+    let conn       = db_connection dbi
+        machineKey = (db_machines dbi) M.! mid
+    processKey <- head <$> query conn insertProcessQuery (pid, machineKey)
+    case processKey of
+        Only key -> do
+            return $ dbi {
+                db_processes   = M.insert (mid,pid) key (db_processes dbi)
+                }
+        _       -> error "machine insertion failed"
+
+insertThreadQuery :: Query
+insertThreadQuery =
+    "Insert into Threads()"
 
 
 -- insertion functions for different Events
