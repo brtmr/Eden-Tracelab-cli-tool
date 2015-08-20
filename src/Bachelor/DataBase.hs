@@ -36,8 +36,10 @@ data DBInfo = DBInfo {
 
 instance Show DBInfo where
     show dbi =
-            "Trace ID : " ++ (show $ db_traceKey dbi) ++ "\n"
-        ++  "Machines:  " ++ (show $ db_machines dbi)
+            "Trace ID : "  ++ (show $ db_traceKey dbi) ++ "\n"
+        ++  "Machines:  "  ++ (show $ db_machines dbi) ++ "\n"
+        ++  "Processes: "  ++ (show $ db_processes dbi) ++ "\n"
+        ++  "Threads:   "  ++ (show $ db_threads dbi) ++ "\n"
 
 -- when starting to parse a new file, we need to create a new connection,
 -- and then insert a new trace into our list of traces, then store the trace_id
@@ -98,8 +100,20 @@ insertProcess dbi mid pid = do
 
 insertThreadQuery :: Query
 insertThreadQuery =
-    "Insert into Threads()"
+    "Insert into Threads(num, process_id)\
+    \values( ? , ? ) returning thread_id;"
 
+insertThread :: DBInfo -> MachineId -> ProcessId -> ThreadId -> IO DBInfo
+insertThread dbi mid pid tid = do
+    let conn       = db_connection dbi
+        processKey = (db_processes dbi) M.! (mid,pid)
+    threadKey <- head <$> query conn insertThreadQuery (tid, processKey)
+    case threadKey of
+        Only key -> do
+            return $ dbi {
+                db_threads   = M.insert (mid,pid,tid) key (db_threads dbi)
+                }
+        _       -> error "machine insertion failed"
 
 -- insertion functions for different Events
 insertEvent :: DBInfo -> Event -> IO DBInfo
