@@ -26,6 +26,11 @@ type MachineMap   = M.HashMap MachineId MachineState
 data RunState = Idle | Running | Blocked | Runnable
     deriving (Show, Eq)
 
+stateToInt :: RunState -> Int
+stateToInt Idle     = 0
+stateToInt Running  = 1
+stateToInt Blocked  = 2
+stateToInt Runnable = 3
 
 data RTSState = RTSState {
     machineMap :: MachineMap,
