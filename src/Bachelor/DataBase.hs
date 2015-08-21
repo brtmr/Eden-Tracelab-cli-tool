@@ -124,7 +124,7 @@ insertMachineState :: DBInfo -> MachineId -> Timestamp -> Timestamp -> RunState 
 insertMachineState dbi mid start duration state = do
     let conn = db_connection dbi
         machineKey = (db_machines dbi) M.! mid
-    execute conn insertMachineStateQuery (start, duration, state)
+    execute conn insertMachineStateQuery (start, duration, stateToInt state)
     return ()
 
 -- insertion functions for different Events
