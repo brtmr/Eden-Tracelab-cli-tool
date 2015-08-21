@@ -61,6 +61,7 @@ library
                        Bachelor.DataBase
                        Bachelor.Types
                        Bachelor.Util
+                       Bachelor.TinyZipper
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:
@@ -77,7 +78,8 @@ library
                        attoparsec-binary,
                        lens,
                        array == 0.5.0.0,
-                       postgresql-simple == 0.4.1.0
+                       postgresql-simple == 0.4.1.0,
+                       zip-archive
 
   -- Directories containing source files.
   hs-source-dirs:      src
