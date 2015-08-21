@@ -7,6 +7,7 @@ module Bachelor.SeqParse (parse, ParserState) where
 
 import Bachelor.Parsers
 import qualified Bachelor.DataBase as DB
+import qualified Bachelor.TinyZipper as TZ
 import qualified Database.PostgreSQL.Simple as PG
 import qualified Bachelor.Util as U
 import Bachelor.Types
@@ -28,12 +29,20 @@ data ParserState = ParserState {
 
 $(makeLenses ''ParserState)
 
-filename = "/home/basti/bachelor/traces/mergesort_large/mergesort#9.eventlog"
-testRun = parse filename 1
+-- instead of parsing a single *.eventlog file, we want to parse a *.parevents
+-- file, which is a zipfile containing a set of *.eventlog files, one for
+-- every Machine used.
+run :: FilePath -> IO()
+run fn = do
+    c <- TZ.readZip fn
+    case c of
+        Left err -> error $ "could not open the *.parseEvents File : " ++ err
+        Right bss -> do
+            undefined
 
 -- | parses a single *.eventlog file for the events of the capability n
 parse :: FilePath -- ^ Path to the *.Eventlog file.
-    -> Int        -- ^ The capability to analyze
+    -> Int --the capability
     -> IO ()
 parse file
     n = do
