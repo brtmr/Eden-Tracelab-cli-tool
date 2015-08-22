@@ -58,7 +58,9 @@ data RTSState = RTSState {
     threads   :: ThreadMap
     }
 
-data MtpType = Machine MachineId | Process ProcessId | Thread ThreadId deriving Show
+data MtpType = Machine MachineId
+    | Process MachineId ProcessId
+    | Thread  MachineId ThreadId deriving Show
 
 startingState :: RTSState
 startingState = RTSState PreMachine M.empty M.empty
@@ -73,6 +75,7 @@ data GUIEvent = GUIEvent{
     duration  :: Word64,
     state     :: RunState
     } | NewMachine MachineId | NewProcess MachineId ProcessId
+      | NewThread MachineId ProcessId ThreadId
 
 --  | The Interface for reading/writing the data from disk.
 class IOEventData a where
