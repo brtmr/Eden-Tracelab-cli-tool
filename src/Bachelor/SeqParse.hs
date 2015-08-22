@@ -6,46 +6,55 @@ module Bachelor.SeqParse (parse, ParserState) where
 #include "EventLogFormat.h"
 
 import Bachelor.Parsers
+import Bachelor.Types
+import Control.Applicative
+import Control.Lens
+import Data.List
+import GHC.RTS.Events
 import qualified Bachelor.DataBase as DB
 import qualified Bachelor.TinyZipper as TZ
-import qualified Database.PostgreSQL.Simple as PG
 import qualified Bachelor.Util as U
-import Bachelor.Types
-import Control.Lens
-import qualified Data.ByteString.Lazy as LB
-import GHC.RTS.Events
 import qualified Data.Attoparsec.ByteString.Lazy as AL
+import qualified Data.ByteString.Lazy as LB
 import qualified Data.HashMap.Strict as M
 import qualified Data.IntMap as IM
+import qualified Database.PostgreSQL.Simple as PG
+import qualified System.Directory as Dir
 import qualified System.IO as IO
 
 data ParserState = ParserState {
     _p_bs       :: LB.ByteString, -- the file we are reading from
     _p_rtsState :: RTSState,      -- the inner state of the runtime
     _p_pt       :: ParserTable,   -- event types and their parsers
-    _p_cap      :: Int,           -- the capability we are interested in
-    _p_con      :: PG.Connection
+    _p_cap      :: Int            -- the capability we are currently parsing.
         }
 
 $(makeLenses ''ParserState)
 
+-- paths:
+testdir = "/home/basti/bachelor/traces/mergesort_large/"
+
 -- instead of parsing a single *.eventlog file, we want to parse a *.parevents
 -- file, which is a zipfile containing a set of *.eventlog files, one for
 -- every Machine used.
+-- because reading from a zipfile lazily seems somewhat troubling, we will
+-- instead unzip all files beforehand and then read them all as single files.
+
 run :: FilePath -> IO()
-run fn = do
-    c <- TZ.readZip fn
-    case c of
-        Left err -> error $ "could not open the *.parseEvents File : " ++ err
-        Right bss -> do
-            print $ length bss
+run dir = do
+    paths <- filter (isSuffixOf ".eventlog") <$> Dir.getDirectoryContents dir
+    dbi <- DB.createDBInfo dir
+    print dbi
+    mapM_ (\filename -> print $ extractNumbers filename) paths
+    mapM_ (\filename -> parse $ dir ++ filename) paths
+
+extractNumbers :: String -> Int
+extractNumbers str = read $ reverse $ takeWhile (/= '#') $ drop 9 $ reverse str
 
 -- | parses a single *.eventlog file for the events of the capability n
 parse :: FilePath -- ^ Path to the *.Eventlog file.
-    -> Int --the capability
     -> IO ()
-parse file
-    n = do
+parse file = do
     --open the DataBase Connection
     con <- DB.mkConnection
     bs <- LB.readFile file
@@ -58,8 +67,7 @@ parse file
             let state = ParserState {
                 _p_bs       = bsdata,
                 _p_rtsState = startingState,
-                _p_cap      = n,
-                _p_con      = con,
+                _p_cap      = -1,
                 _p_pt       = pt
                 }
             handleEvents state
@@ -70,8 +78,12 @@ handleEvents ps = do
     case s of
         AL.Fail{}                 -> error "Failed parsing Events "
         (AL.Done bsrest (Just e))  -> do
-            putStrLn $ show e
-            handleEvents (ps {_p_bs = bsrest})
+            case e of
+                Event _ CreateMachine{} -> do
+                    putStrLn $ show e
+                    handleEvents (ps {_p_bs = bsrest})
+                _                       -> do
+                    handleEvents (ps {_p_bs = bsrest})
         (AL.Done bsrest Nothing)  -> do
             putStrLn $ show $ "Done."
 {-
