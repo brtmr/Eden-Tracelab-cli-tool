@@ -38,7 +38,7 @@ run fn = do
     case c of
         Left err -> error $ "could not open the *.parseEvents File : " ++ err
         Right bss -> do
-            undefined
+            print $ length bss
 
 -- | parses a single *.eventlog file for the events of the capability n
 parse :: FilePath -- ^ Path to the *.Eventlog file.
