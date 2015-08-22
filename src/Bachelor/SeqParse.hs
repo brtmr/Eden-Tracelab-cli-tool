@@ -22,12 +22,24 @@ import qualified Database.PostgreSQL.Simple as PG
 import qualified System.Directory as Dir
 import qualified System.IO as IO
 
+-- the state that a parser of a single EventLog carries.
 data ParserState = ParserState {
     _p_bs       :: LB.ByteString, -- the file we are reading from
     _p_rtsState :: RTSState,      -- the inner state of the runtime
     _p_pt       :: ParserTable,   -- event types and their parsers
     _p_cap      :: Int            -- the capability we are currently parsing.
         }
+
+-- the state that the overall parser keeps.
+-- contains the parser information for every single *.eventlog file,
+-- as well as the DataBase connection.
+-- if time permits, this might be extended to contain a message queue,
+-- containing open messages that have not yet been committed to the
+-- database.
+data ParEventsState = ParEventsState {
+    pe_pState :: M.HashMap MachineId ParserState,
+    pe_con    :: DB.DBInfo
+    }
 
 $(makeLenses ''ParserState)
 
