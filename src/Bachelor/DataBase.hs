@@ -30,7 +30,7 @@ data DBInfo = DBInfo {
     db_traceKey   :: Int,
     db_machines   :: M.HashMap MachineId Int,
     db_processes  :: M.HashMap (MachineId,ProcessId) Int,
-    db_threads    :: M.HashMap (MachineId,ProcessId,ThreadId) Int,
+    db_threads    :: M.HashMap (MachineId,ThreadId) Int,
     db_connection :: Connection
     }
 
@@ -111,9 +111,15 @@ insertThread dbi mid pid tid = do
     case threadKey of
         Only key -> do
             return $ dbi {
-                db_threads   = M.insert (mid,pid,tid) key (db_threads dbi)
+                db_threads   = M.insert (mid,tid) key (db_threads dbi)
                 }
         _       -> error "machine insertion failed"
+
+
+insertEvent :: DBInfo -> GUIEvent -> IO DBInfo
+insertEvent dbi (NewMachine mid)        = insertMachine dbi mid
+insertEvent dbi (NewProcess mid pid)    = insertProcess dbi mid pid
+insertEvent dbi (NewThread mid pid tid) = insertThread  dbi mid pid tid
 
 insertMachineStateQuery :: Query
 insertMachineStateQuery =
@@ -127,12 +133,3 @@ insertMachineState dbi mid start duration state = do
     execute conn insertMachineStateQuery (start, duration, stateToInt state)
     return ()
 
--- insertion functions for different Events
-insertEvent :: DBInfo -> Event -> IO DBInfo
-insertEvent dbi (Event ts spec) =
-    case spec of
-        CreateMachine realtime m_id -> do
-            return dbi
-        -- events not implemented
-        _                  -> do
-            return dbi

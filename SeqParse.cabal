@@ -79,7 +79,8 @@ library
                        lens,
                        array == 0.5.0.0,
                        postgresql-simple == 0.4.1.0,
-                       zip-archive
+                       zip-archive,
+                       directory == 1.2.1.0
 
   -- Directories containing source files.
   hs-source-dirs:      src
