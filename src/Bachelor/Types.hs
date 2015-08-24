@@ -21,17 +21,15 @@ data ProcessState = ProcessState {
     p_timestamp :: Timestamp,
     p_tRunning  :: Int,
     p_tRunnable :: Int,
-    p_tBlocked  :: Int,
-    p_tIdle     :: Int
+    p_tBlocked  :: Int
     }
 
 data MachineState = MachineState {
     m_state     :: RunState,
     m_timestamp :: Timestamp,
-    m_tRunning  :: Int,
-    m_tRunnable :: Int,
-    m_tBlocked  :: Int,
-    m_tIdle     :: Int
+    m_pRunning  :: Int,
+    m_pRunnable :: Int,
+    m_pBlocked  :: Int
     } | PreMachine
 
 data ThreadState  = ThreadState {
@@ -53,9 +51,17 @@ stateToInt Blocked  = 2
 stateToInt Runnable = 3
 
 data RTSState = RTSState {
-    machines  :: MachineState,
+    machine  :: MachineState,
     processes :: ProcessMap,
     threads   :: ThreadMap
+    }
+
+-- creates an empty, idle Machine not containing any processes
+makeRTSState :: MachineId -> RTSState
+makeRTSState mid = RTSState {
+    machine = PreMachine,
+    processes = M.empty,
+    threads   = M.empty
     }
 
 data MtpType = Machine MachineId

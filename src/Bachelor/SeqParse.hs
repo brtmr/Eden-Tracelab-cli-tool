@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TemplateHaskell #-}
-module Bachelor.SeqParse (parse, ParserState) where
+module Bachelor.SeqParse where
 
 #define EVENTLOG_CONSTANTS_ONLY
 #include "EventLogFormat.h"
@@ -11,9 +11,11 @@ import Control.Applicative
 import Control.Lens
 import Data.List
 import GHC.RTS.Events
+import Data.Map.Lens
 import qualified Bachelor.DataBase as DB
 import qualified Bachelor.TinyZipper as TZ
 import qualified Bachelor.Util as U
+import qualified Data.Array.IArray as Array
 import qualified Data.Attoparsec.ByteString.Lazy as AL
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.HashMap.Strict as M
@@ -22,12 +24,17 @@ import qualified Database.PostgreSQL.Simple as PG
 import qualified System.Directory as Dir
 import qualified System.IO as IO
 
--- the state that a parser of a single EventLog carries.
+-- The Parsing state for a specific capability. It contains the Lazy ByteString
+-- consumed up to the current event, and the last parsed Event.
+type CapState = (LB.ByteString, Maybe Event)
+
+-- The state that a parser of a single EventLog carries.
 data ParserState = ParserState {
-    _p_bs       :: LB.ByteString, -- the file we are reading from
+    _p_caps     :: CapState,      -- the 'system' capability.
+    _p_cap0     :: CapState,      -- capability 0.
     _p_rtsState :: RTSState,      -- the inner state of the runtime
-    _p_pt       :: ParserTable,   -- event types and their parsers
-    _p_cap      :: Int            -- the capability we are currently parsing.
+    _p_pt       :: ParserTable    -- event types and their parsers,
+                                  -- generated from the header.
         }
 
 -- the state that the overall parser keeps.
@@ -36,87 +43,138 @@ data ParserState = ParserState {
 -- if time permits, this might be extended to contain a message queue,
 -- containing open messages that have not yet been committed to the
 -- database.
-data ParEventsState = ParEventsState {
-    pe_pState :: M.HashMap MachineId ParserState,
-    pe_con    :: DB.DBInfo
+data MultiParserState = MultiParserState {
+    _machineTable :: M.HashMap MachineId ParserState, -- Each machine has its
+                                                      -- own ParserState.
+    _con    :: DB.DBInfo -- with a global DataBase connection.
     }
 
 $(makeLenses ''ParserState)
+$(makeLenses ''MultiParserState)
 
 -- paths:
-testdir = "/home/basti/bachelor/traces/mergesort_large/"
+testdir = "/home/basti/bachelor/traces/mergesort_small/"
 
 -- instead of parsing a single *.eventlog file, we want to parse a *.parevents
 -- file, which is a zipfile containing a set of *.eventlog files, one for
 -- every Machine used.
 -- because reading from a zipfile lazily seems somewhat troubling, we will
 -- instead unzip all files beforehand and then read them all as single files.
-
 run :: FilePath -> IO()
 run dir = do
+    -- filter the directory contents into eventlogs.
     paths <- filter (isSuffixOf ".eventlog") <$> Dir.getDirectoryContents dir
+        -- prepend the directory.
+    let files = map (\x -> dir ++ x) paths
+        -- extract the machine number.
+        mids  = map extractNumber paths
+    -- connect to the DataBase, and enter a new trace, with the current
+    -- directory and time.
     dbi <- DB.createDBInfo dir
+    -- create a parserState for each eventLog file.
+    pStates <- zip mids <$> mapM createParserState paths
+    -- create the multistate that encompasses all machines.
+    let mState = MultiParserState {
+        _machineTable = M.fromList pStates,
+        _con = dbi}
     print dbi
-    mapM_ (\filename -> print $ extractNumbers filename) paths
-    mapM_ (\filename -> parse $ dir ++ filename) paths
 
-extractNumbers :: String -> Int
-extractNumbers str = read $ reverse $ takeWhile (/= '#') $ drop 9 $ reverse str
+{-
+ - each eventLog file has the number of the according machine (this pe) stored
+ - in the filename as base_file#xxx.eventlog, where xxx is the number
+ - that will also be the later MachineId
+ -}
+extractNumber :: String -> MachineId
+extractNumber str = read $ reverse $ takeWhile (/= '#') $ drop 9 $ reverse str
 
--- | parses a single *.eventlog file for the events of the capability n
-parse :: FilePath -- ^ Path to the *.Eventlog file.
-    -> IO ()
-parse file = do
-    --open the DataBase Connection
-    con <- DB.mkConnection
-    bs <- LB.readFile file
-    -- read the Header
-    case (AL.parse headerParser bs) of
-        AL.Fail{}               -> error "Header Parsing failed."
-        (AL.Done bsrest header) -> do
+createParserState :: FilePath -> IO ParserState
+createParserState fp = do
+    let mid = extractNumber fp
+    bs <- LB.readFile fp
+    case AL.parse headerParser bs of
+        AL.Done bsrest header -> do
             let pt     = mkParserTable header
-                bsdata = LB.drop 4 bsrest
-            let state = ParserState {
-                _p_bs       = bsdata,
-                _p_rtsState = startingState,
-                _p_cap      = -1,
+                bsdata = LB.take 4 bsrest --'datb'
+            return ParserState {
+                _p_caps     = getFirstCapState bsdata pt 0xFFFF,
+                _p_cap0     = getFirstCapState bsdata pt 0,
+                _p_rtsState = makeRTSState mid,
                 _p_pt       = pt
                 }
-            handleEvents state
+        _                     -> error $ "failed parsing header of file " ++ fp
 
-handleEvents :: ParserState -> IO()
-handleEvents ps = do
-    let s = AL.parse (parseSingleEvent (ps^.p_pt)) (ps^.p_bs)
-    case s of
-        AL.Fail{}                 -> error "Failed parsing Events "
-        (AL.Done bsrest (Just e))  -> do
-            case e of
-                Event _ CreateMachine{} -> do
-                    putStrLn $ show e
-                    handleEvents (ps {_p_bs = bsrest})
-                _                       -> do
-                    handleEvents (ps {_p_bs = bsrest})
-        (AL.Done bsrest Nothing)  -> do
-            putStrLn $ show $ "Done."
+getFirstCapState :: LB.ByteString -> ParserTable -> Capability -> CapState
+getFirstCapState bs pt cap =
+    case AL.parse (parseSingleEvent pt cap) bs of
+        AL.Done bsrest res -> (bsrest,res)
+        _                  -> error $ "failed parsing the first event for cap " ++ (show cap)
+
 {-
-machineLens m_id = p_rtsState._1.(at m_id)
-processLens p_id = p_rtsState._2.(at p_id)
-threadLens  t_id = p_rtsState._3.(at t_id)
--}
+ - This is the main function for parsing a single event log and storing
+ - the events contained within into the database.
+ - -}
+parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
+-- both capabilies still have events left. return the earlier one.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just (Event tss specs)))
+    (bs0,ev0@(Just (Event ts0 spec0)))
+    rts pt) = if (tss < ts0)
+        then do
+            print evs
+            parseSingleEventLog dbi mid pstate {
+                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+            }
+        else do
+            print ev0
+            parseSingleEventLog dbi mid pstate {
+                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+            }
+-- no more system events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@Nothing)
+    (bs0,ev0@(Just (Event ts0 spec0)))
+    rts pt) = do
+            print ev0
+            parseSingleEventLog dbi mid pstate {
+                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+            }
+-- no more cap1 events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just (Event tss specs)))
+    (bs0,ev0@Nothing)
+    rts pt) = do
+            print evs
+            parseSingleEventLog dbi mid pstate {
+                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+            }
+-- no more events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@Nothing)
+    (bs0,ev0@Nothing)
+    rts pt) = return ()
 
+-- takes the parser state of a capability
+-- replaces the event with the next one in the bytstring.
+parseNextEvent :: CapState -> ParserTable -> Capability -> CapState
+parseNextEvent (bs,_) pt cap =
+    case AL.parse (parseSingleEvent pt cap) bs of
+        AL.Done bsrest res -> (bsrest,res)
+        _                  -> error $ "Failing to parse event "
+                                        ++ (show $ LB.take 10 $ bs)
 {-
     Handlers for the different EventTypes.
     Some do not create GUIEvents, so they just return the new ParserState
     Some do create GUIEvents, so they return (ParserState,[GUIEvent])
 -}
-
 -- the following events can directly produce an event, WITHOUT producing
 -- additional events:
 
 -- CreateMachine
 -- CreateProcess
+
 -- CreateThread
 -- AssignThreadToProcess
+
 -- Startup (not sure wether we need this at all.)
 -- EdenStartReceive
 -- EdenEndReceive
@@ -129,5 +187,16 @@ threadLens  t_id = p_rtsState._3.(at t_id)
 -- StopThread   (might stop the process & machine.)
 -- KillProcess  (kill all threads)
 -- KillMachine  (kill all Processes)
+
+{- when Events are handled, we need to know from which Eventlog they where
+ - sourced, so they are annotated with additional Information:  -}
+
+data AssignedEvent = AssignedEvent {
+    event :: Event,
+    machine :: MachineId,
+    cap :: Int
+    }
+
+type HandlerType = MultiParserState -> AssignedEvent -> (MultiParserState,[GUIEvent])
 
 
