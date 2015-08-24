@@ -36,10 +36,12 @@ data DBInfo = DBInfo {
 
 instance Show DBInfo where
     show dbi =
-            "Trace ID : "  ++ (show $ db_traceKey dbi) ++ "\n"
-        ++  "Machines:  "  ++ (show $ db_machines dbi) ++ "\n"
+            "\n\n####BEGIN DB INFO\n\n"
+        ++  "Trace ID : "  ++ (show $ db_traceKey  dbi) ++ "\n"
+        ++  "Machines:  "  ++ (show $ db_machines  dbi) ++ "\n"
         ++  "Processes: "  ++ (show $ db_processes dbi) ++ "\n"
-        ++  "Threads:   "  ++ (show $ db_threads dbi) ++ "\n"
+        ++  "Threads:   "  ++ (show $ db_threads   dbi) ++ "\n"
+        ++  "\n\n####END DB INFO\n\n"
 
 -- when starting to parse a new file, we need to create a new connection,
 -- and then insert a new trace into our list of traces, then store the trace_id

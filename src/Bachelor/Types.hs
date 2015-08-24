@@ -22,7 +22,7 @@ data ProcessState = ProcessState {
     p_tRunning  :: Int,
     p_tRunnable :: Int,
     p_tBlocked  :: Int
-    }
+    } deriving Show
 
 data MachineState = MachineState {
     m_state     :: RunState,
@@ -30,13 +30,13 @@ data MachineState = MachineState {
     m_pRunning  :: Int,
     m_pRunnable :: Int,
     m_pBlocked  :: Int
-    } | PreMachine
+    } | PreMachine deriving Show
 
 data ThreadState  = ThreadState {
     t_parent      :: ProcessId,
     t_state       :: RunState,
     t_timestamp   :: Timestamp
-    }
+    } deriving Show
 
 type ThreadMap    = M.HashMap ThreadId ThreadState
 type ProcessMap   = M.HashMap ProcessId ProcessState
@@ -54,7 +54,7 @@ data RTSState = RTSState {
     machine  :: MachineState,
     processes :: ProcessMap,
     threads   :: ThreadMap
-    }
+    } deriving Show
 
 -- creates an empty, idle Machine not containing any processes
 makeRTSState :: MachineId -> RTSState

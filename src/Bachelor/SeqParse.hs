@@ -37,6 +37,21 @@ data ParserState = ParserState {
                                   -- generated from the header.
         }
 
+$(makeLenses ''ParserState)
+
+instance Show ParserState where
+    show (ParserState (bss,es) (bs0,e0) rts pt) =
+           "\n\n#####BEGIN PARSER STATE\n\n"
+        ++ "System Capability: " ++ "\n"
+        ++ "    " ++ (show $ LB.take 10 $ bss) ++ "\n"
+        ++ (show es) ++ "\n"
+        ++ "Capability 0: " ++ "\n"
+        ++ "    " ++ (show $ LB.take 10 $ bs0) ++ "\n"
+        ++ (show e0) ++ "\n"
+        ++ "Run-Time State: "
+        ++ (show rts)
+        ++ "\n\n#### END PARSER STATE\n\n"
+
 -- the state that the overall parser keeps.
 -- contains the parser information for every single *.eventlog file,
 -- as well as the DataBase connection.
@@ -47,9 +62,8 @@ data MultiParserState = MultiParserState {
     _machineTable :: M.HashMap MachineId ParserState, -- Each machine has its
                                                       -- own ParserState.
     _con    :: DB.DBInfo -- with a global DataBase connection.
-    }
+    } deriving Show
 
-$(makeLenses ''ParserState)
 $(makeLenses ''MultiParserState)
 
 -- paths:
@@ -72,12 +86,12 @@ run dir = do
     -- directory and time.
     dbi <- DB.createDBInfo dir
     -- create a parserState for each eventLog file.
-    pStates <- zip mids <$> mapM createParserState paths
+    pStates <- zip mids <$> mapM createParserState files
     -- create the multistate that encompasses all machines.
     let mState = MultiParserState {
         _machineTable = M.fromList pStates,
         _con = dbi}
-    print dbi
+    print mState
 
 {-
  - each eventLog file has the number of the according machine (this pe) stored
@@ -94,7 +108,7 @@ createParserState fp = do
     case AL.parse headerParser bs of
         AL.Done bsrest header -> do
             let pt     = mkParserTable header
-                bsdata = LB.take 4 bsrest --'datb'
+                bsdata = LB.drop 4 bsrest --'datb'
             return ParserState {
                 _p_caps     = getFirstCapState bsdata pt 0xFFFF,
                 _p_cap0     = getFirstCapState bsdata pt 0,
@@ -107,7 +121,8 @@ getFirstCapState :: LB.ByteString -> ParserTable -> Capability -> CapState
 getFirstCapState bs pt cap =
     case AL.parse (parseSingleEvent pt cap) bs of
         AL.Done bsrest res -> (bsrest,res)
-        _                  -> error $ "failed parsing the first event for cap " ++ (show cap)
+        _                  -> error $ "failed parsing the first event for cap " ++ (show cap) ++ "\n"
+                                      ++ (show $ LB.take 20 bs)
 
 {-
  - This is the main function for parsing a single event log and storing
