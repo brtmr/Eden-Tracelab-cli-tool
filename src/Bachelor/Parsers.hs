@@ -176,10 +176,23 @@ knownParsers = [ (0, (\cap timestamp -> do -- CreateThread
                     n_caps <- fromIntegral <$> U.parseW16
                     return $  Event timestamp (Startup n_caps))),
                 (18, (\cap timestamp ->do
-                    blockSize <- U.parseW32
+                    blockSize <- fromIntegral <$> U.parseW32
                     endTime   <- U.parseW64
-                    cap       <- fromIntegral <$> U.parseW16
-                    return $  Event timestamp (EventBlock timestamp cap []))),
+                    this_cap       <- fromIntegral <$> U.parseW16
+                    -- if this is the capability we are interested in,
+                    -- then return an empty BlockEvent, and continue with
+                    -- the parsing with the next event.
+                    -- if not, skip the entire block, then return an empty
+                    -- event block.
+                    if (cap==this_cap)
+                        then
+                            return $  Event timestamp (EventBlock timestamp this_cap [])
+                        else do
+                            -- we have already consumed 14 byte of the current
+                            -- block. Consume the rest.
+                            _ <- A.take (blockSize - 14)
+                            return $  Event timestamp (EventBlock timestamp this_cap []))),
+
                 (20, (\cap timestamp -> return $  Event timestamp GCIdle)),
                 (21, (\cap timestamp -> return $  Event timestamp GCWork)),
                 (22, (\cap timestamp -> return $  Event timestamp GCDone)),
