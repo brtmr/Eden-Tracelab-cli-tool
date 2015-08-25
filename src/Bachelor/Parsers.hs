@@ -188,9 +188,9 @@ knownParsers = [ (0, (\cap timestamp -> do -- CreateThread
                         then
                             return $  Event timestamp (EventBlock timestamp this_cap [])
                         else do
-                            -- we have already consumed 14 byte of the current
+                            -- we have already consumed 24 byte of the current
                             -- block. Consume the rest.
-                            _ <- A.take (blockSize - 14)
+                            _ <- A.take (blockSize - 24)
                             return $  Event timestamp (EventBlock timestamp this_cap []))),
 
                 (20, (\cap timestamp -> return $  Event timestamp GCIdle)),
