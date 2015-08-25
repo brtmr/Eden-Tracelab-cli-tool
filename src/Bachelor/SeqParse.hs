@@ -133,22 +133,14 @@ getFirstCapState bs pt cap =
  - -}
 parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
 -- event blocks need to be skipped without handling them.
+-- System EventBlock
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@(Just (Event _ EventBlock{})))
-    _
-    rts pt) = do
-            putStrLn "System cap EventBlock"
-            parseSingleEventLog dbi mid pstate {
-                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
-            }
+    _ rts pt) = parseSingleEventLog dbi mid $ parseNextEventSystem pstate
+-- Cap 0 EventBlock
 parseSingleEventLog dbi mid pstate@(ParserState
-  _
-  (bs0,e0@(Just (Event _ EventBlock{})))
-    rts pt) = do
-            putStrLn "cap 0 EventBlock"
-            parseSingleEventLog dbi mid pstate {
-                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
-            }
+  _ (bs0,e0@(Just (Event _ EventBlock{})))
+    rts pt) = parseSingleEventLog dbi mid $ parseNextEventNull pstate
 -- both capabilies still have events left. return the earlier one.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@(Just (Event tss specs)))
@@ -157,15 +149,11 @@ parseSingleEventLog dbi mid pstate@(ParserState
         then do
             putStrLn "System cap."
             print evs
-            parseSingleEventLog dbi mid pstate {
-                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
-            }
+            parseSingleEventLog dbi mid $ parseNextEventSystem pstate
         else do
             putStrLn "cap. 0"
             print ev0
-            parseSingleEventLog dbi mid pstate {
-                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
-            }
+            parseSingleEventLog dbi mid $ parseNextEventNull pstate
 -- no more system events.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@Nothing)
@@ -173,19 +161,15 @@ parseSingleEventLog dbi mid pstate@(ParserState
     rts pt) = do
             putStrLn "cap. 0"
             print ev0
-            parseSingleEventLog dbi mid pstate {
-                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
-            }
--- no more cap1 events.
+            parseSingleEventLog dbi mid $ parseNextEventNull pstate
+-- no more cap0 events.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@(Just (Event tss specs)))
     (bs0,ev0@Nothing)
     rts pt) = do
             putStrLn "System cap."
             print evs
-            parseSingleEventLog dbi mid pstate {
-                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
-            }
+            parseSingleEventLog dbi mid $ parseNextEventSystem pstate
 -- no more events.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@Nothing)
@@ -204,6 +188,17 @@ parseNextEvent (bs,e) pt cap =
                                         ++ "Previous Event: " ++ (show $ e)
                                             ++ "\n"
                                         ++ (show $ LB.take 100 $ bs)
+
+-- specific functions to parse the next event for the system cap and the
+-- 1st capability.
+-- short function definition through lens magic.
+parseNextEventSystem :: ParserState -> ParserState
+parseNextEventSystem pstate =
+                p_caps %~ (\s -> parseNextEvent s (pstate^.p_pt) 0xFFFF) $ pstate
+
+parseNextEventNull :: ParserState -> ParserState
+parseNextEventNull pstate =
+                p_cap0 %~ (\s -> parseNextEvent s (pstate^.p_pt) 0) $ pstate
 {-
     Handlers for the different EventTypes.
     Some do not create GUIEvents, so they just return the new ParserState
