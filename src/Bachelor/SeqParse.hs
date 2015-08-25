@@ -10,8 +10,9 @@ import Bachelor.Types
 import Control.Applicative
 import Control.Lens
 import Data.List
-import GHC.RTS.Events
 import Data.Map.Lens
+import Data.Maybe
+import GHC.RTS.Events
 import qualified Bachelor.DataBase as DB
 import qualified Bachelor.TinyZipper as TZ
 import qualified Bachelor.Util as U
@@ -92,6 +93,8 @@ run dir = do
         _machineTable = M.fromList pStates,
         _con = dbi}
     print mState
+    let m1 = fromJust $  (mState^.machineTable^.(at 1))
+    parseSingleEventLog dbi 1 m1
 
 {-
  - each eventLog file has the number of the according machine (this pe) stored
@@ -129,35 +132,56 @@ getFirstCapState bs pt cap =
  - the events contained within into the database.
  - -}
 parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
+-- event blocks need to be skipped without handling them.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just (Event _ EventBlock{})))
+    _
+    rts pt) = do
+            putStrLn "System cap EventBlock"
+            parseSingleEventLog dbi mid pstate {
+                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+            }
+parseSingleEventLog dbi mid pstate@(ParserState
+  _
+  (bs0,e0@(Just (Event _ EventBlock{})))
+    rts pt) = do
+            putStrLn "cap 0 EventBlock"
+            parseSingleEventLog dbi mid pstate {
+                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
+            }
 -- both capabilies still have events left. return the earlier one.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@(Just (Event tss specs)))
     (bs0,ev0@(Just (Event ts0 spec0)))
     rts pt) = if (tss < ts0)
         then do
+            putStrLn "System cap."
             print evs
             parseSingleEventLog dbi mid pstate {
                 _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
             }
         else do
+            putStrLn "cap. 0"
             print ev0
             parseSingleEventLog dbi mid pstate {
-                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
             }
 -- no more system events.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@Nothing)
     (bs0,ev0@(Just (Event ts0 spec0)))
     rts pt) = do
+            putStrLn "cap. 0"
             print ev0
             parseSingleEventLog dbi mid pstate {
-                _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
+                _p_cap0 = parseNextEvent (pstate^.p_cap0) pt 0
             }
 -- no more cap1 events.
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@(Just (Event tss specs)))
     (bs0,ev0@Nothing)
     rts pt) = do
+            putStrLn "System cap."
             print evs
             parseSingleEventLog dbi mid pstate {
                 _p_caps = parseNextEvent (pstate^.p_caps) pt 0xFFFF
@@ -171,11 +195,15 @@ parseSingleEventLog dbi mid pstate@(ParserState
 -- takes the parser state of a capability
 -- replaces the event with the next one in the bytstring.
 parseNextEvent :: CapState -> ParserTable -> Capability -> CapState
-parseNextEvent (bs,_) pt cap =
+parseNextEvent (bs,e) pt cap =
     case AL.parse (parseSingleEvent pt cap) bs of
         AL.Done bsrest res -> (bsrest,res)
-        _                  -> error $ "Failing to parse event "
-                                        ++ (show $ LB.take 10 $ bs)
+        _                  -> error $ "Failing to parse event: \n\n"
+                                        ++ "Capability: "     ++ (show $ cap)
+                                            ++ "\n"
+                                        ++ "Previous Event: " ++ (show $ e)
+                                            ++ "\n"
+                                        ++ (show $ LB.take 100 $ bs)
 {-
     Handlers for the different EventTypes.
     Some do not create GUIEvents, so they just return the new ParserState
