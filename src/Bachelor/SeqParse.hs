@@ -12,7 +12,7 @@ import Control.Lens
 import Data.List
 import Data.Map.Lens
 import Data.Maybe
-import GHC.RTS.Events
+import GHC.RTS.Events hiding (machine)
 import qualified Bachelor.DataBase as DB
 import qualified Bachelor.TinyZipper as TZ
 import qualified Bachelor.Util as U
@@ -93,8 +93,9 @@ run dir = do
         _machineTable = M.fromList pStates,
         _con = dbi}
     print mState
-    let m1 = fromJust $  (mState^.machineTable^.(at 1))
-    parseSingleEventLog dbi 1 m1
+    -- for testing purposes only: test the first machine
+    let m1 = fromJust $ (mState^.machineTable^.(at 2))
+    parseSingleEventLog dbi 2 m1
 
 {-
  - each eventLog file has the number of the according machine (this pe) stored
@@ -228,13 +229,80 @@ parseNextEventNull pstate =
 
 {- when Events are handled, we need to know from which Eventlog they where
  - sourced, so they are annotated with additional Information:  -}
-
 data AssignedEvent = AssignedEvent {
-    event :: Event,
-    machine :: MachineId,
-    cap :: Int
+    _event :: Event,
+    _machine :: MachineId,
+    _cap :: Int
     }
+
+$(makeLenses ''AssignedEvent)
 
 type HandlerType = MultiParserState -> AssignedEvent -> (MultiParserState,[GUIEvent])
 
+-- a Lens that given a machine id will produce the corresponding RTSState
+rtsLens mid = (machineTable.(at mid)._Just.p_rtsState)
 
+createMachine :: HandlerType
+createMachine mState aEvent = (newMState,[])
+    where   mid       = aEvent^.machine
+            newMState = set ((rtsLens mid).rts_machine)
+                MachineState {
+                        _m_state = Idle,
+                        _m_pRunning = 0,
+                        _m_pRunnable = 0,
+                        _m_pBlocked = 0,
+                        _m_timestamp = time (aEvent^.event)
+                    }
+                mState
+
+{- Because Threads are created without an Assigned Thread, we use the
+ - AssignThreadToProcess Event to register the creation of an eden event. -}
+createThread :: HandlerType
+createThread mState aEvent@(AssignedEvent (Event ts (AssignThreadToProcess tid pid)) mid cap) =
+    (newMState,[])
+    --insert the thread.
+    where   newMState = set
+                        ((rtsLens mid).rts_threads.(at tid))
+                        (Just ThreadState {
+                            _t_parent = tid,
+                            _t_state  = Runnable,
+                            _t_timestamp = ts
+                            }
+                        )
+                        mState
+    --adjust the parent process, was its state changed?
+
+{- Utility function to extract the state of a certain thread. -}
+getThreadState :: MultiParserState -> MachineId -> ThreadId -> ThreadState
+getThreadState mState mid tid =
+    fromJust $
+        (fromJust $ mState^.(machineTable.(at mid)))
+        ^.(p_rtsState.rts_threads.(at tid))
+
+runThread :: HandlerType
+runThread mState aEvent@(AssignedEvent (Event ts (RunThread tid)) mid cap) =
+    (newMState, guiEvents)
+            --we need the old Thread State, so that we can check wether it
+            --changed, and alos generate the according stop Event.
+    where   oldThreadState = getThreadState mState mid tid
+            --update the state of the thread
+            newMState      = set
+                        ((rtsLens mid).rts_threads.(at tid))
+                        (Just ThreadState {
+                            _t_parent = tid,
+                            _t_state  = Running,
+                            _t_timestamp = ts
+                            }
+                        )
+                        mState
+            --if the thread state changed, then create an event for the
+            --previous state.
+            guiEvents = if (oldThreadState^.t_state == Running)
+                then []
+                else GUIEvent {
+                    mtpType   = Thread mid tid,
+                    startTime = oldThreadState^.t_timestamp,
+                    duration  = ts - oldThreadState^.t_timestamp,
+                    state     = oldThreadState^.t_state
+                    } : processEvents
+            --if this event changed the state of the overlying process,
