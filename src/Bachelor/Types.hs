@@ -13,36 +13,42 @@ import GHC.RTS.Events (ThreadId, MachineId, ProcessId, Timestamp)
 -- edentv GUI. All of these have a specified starting time and duration
 -- | describes the current state of the RTS at the current moment in time
 
+data RunState = Idle | Running | Blocked | Runnable
+    deriving (Show, Eq)
+
 type Time = Word64
 
 data ProcessState = ProcessState {
-    p_parent    :: MachineId,
-    p_state     :: RunState,
-    p_timestamp :: Timestamp,
-    p_tRunning  :: Int,
-    p_tRunnable :: Int,
-    p_tBlocked  :: Int
+    _p_parent    :: MachineId,
+    _p_state     :: RunState,
+    _p_timestamp :: Timestamp,
+    _p_tRunning  :: Int,
+    _p_tRunnable :: Int,
+    _p_tBlocked  :: Int
     } deriving Show
+
+$(makeLenses ''ProcessState)
 
 data MachineState = MachineState {
-    m_state     :: RunState,
-    m_timestamp :: Timestamp,
-    m_pRunning  :: Int,
-    m_pRunnable :: Int,
-    m_pBlocked  :: Int
+    _m_state     :: RunState,
+    _m_timestamp :: Timestamp,
+    _m_pRunning  :: Int,
+    _m_pRunnable :: Int,
+    _m_pBlocked  :: Int
     } | PreMachine deriving Show
 
+$(makeLenses ''MachineState)
+
 data ThreadState  = ThreadState {
-    t_parent      :: ProcessId,
-    t_state       :: RunState,
-    t_timestamp   :: Timestamp
+    _t_parent      :: ProcessId,
+    _t_state       :: RunState,
+    _t_timestamp   :: Timestamp
     } deriving Show
+
+$(makeLenses ''ThreadState)
 
 type ThreadMap    = M.HashMap ThreadId ThreadState
 type ProcessMap   = M.HashMap ProcessId ProcessState
-
-data RunState = Idle | Running | Blocked | Runnable
-    deriving (Show, Eq)
 
 stateToInt :: RunState -> Int
 stateToInt Idle     = 0
@@ -51,17 +57,19 @@ stateToInt Blocked  = 2
 stateToInt Runnable = 3
 
 data RTSState = RTSState {
-    machine  :: MachineState,
-    processes :: ProcessMap,
-    threads   :: ThreadMap
+    _rts_machine  :: MachineState,
+    _rts_processes :: ProcessMap,
+    _rts_threads   :: ThreadMap
     } deriving Show
+
+$(makeLenses ''RTSState)
 
 -- creates an empty, idle Machine not containing any processes
 makeRTSState :: MachineId -> RTSState
 makeRTSState mid = RTSState {
-    machine = PreMachine,
-    processes = M.empty,
-    threads   = M.empty
+    _rts_machine = PreMachine,
+    _rts_processes = M.empty,
+    _rts_threads   = M.empty
     }
 
 data MtpType = Machine MachineId
