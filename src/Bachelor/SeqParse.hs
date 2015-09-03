@@ -242,6 +242,20 @@ type HandlerType = MultiParserState -> AssignedEvent -> (MultiParserState,[GUIEv
 -- a Lens that given a machine id will produce the corresponding RTSState
 rtsLens mid = (machineTable.(at mid)._Just.p_rtsState)
 
+
+{- Utility function to extract the state of a certain thread. -}
+getThreadState :: MultiParserState -> MachineId -> ThreadId -> ThreadState
+getThreadState mState mid tid =
+    fromJust $
+        (fromJust $ mState^.(machineTable.(at mid)))
+        ^.(p_rtsState.rts_threads.(at tid))
+
+getProcessState :: MultiParserState -> MachineId -> ProcessId -> ProcessState
+getProcessState mState mid pid =
+    fromJust $
+        (fromJust $ mState^.(machineTable.(at mid)))
+        ^.(p_rtsState.rts_processes.(at pid))
+
 createMachine :: HandlerType
 createMachine mState aEvent = (newMState,[])
     where   mid       = aEvent^.machine
@@ -255,29 +269,58 @@ createMachine mState aEvent = (newMState,[])
                     }
                 mState
 
+-- A thread event will adjust the counters of a process event.
+-- this function will then adjust the internal state.
+setProcessState :: ProcessState -> ProcessState
+    -- no Threads Assigned, this process is idle.
+setProcessState p   | p^.p_tTotal == 0             = p {_p_state = Idle}
+    --if a single thread is running, this process will be running.
+                    | p^.p_tRunning >0             = p {_p_state = Running}
+    --if all threads are blocked, this thread is blocked.
+                    | p^.p_tBlocked == p^.p_tTotal = p {_p_state = Blocked}
+    --if at least one Thread is Runnable, this process is runnable.
+                    | p^.p_tRunnable >0             = p {_p_state = Runnable}
+
+--sets the process state and, if necessary, generates an according event.
+setProcessState' :: ProcessState -> ProcessId -> Timestamp -> (ProcessState,[GUIEvent])
+setProcessState' p pid ts
+                  = let pNew = setProcessState p
+                     in if pNew^.p_state == p^.p_state
+                        then (p,[])
+                        else (p,[GUIEvent {
+                                mtpType   = Process (p^.p_parent) (p^.p_pid),
+                                startTime = p^.p_timestamp,
+                                duration  = ts - p^.p_timestamp,
+                                state     = p^.p_state
+                                }]
+                            )
+
 {- Because Threads are created without an Assigned Thread, we use the
  - AssignThreadToProcess Event to register the creation of an eden event. -}
 createThread :: HandlerType
 createThread mState aEvent@(AssignedEvent (Event ts (AssignThreadToProcess tid pid)) mid cap) =
-    (newMState,[])
+    (newMState',[])
     --insert the thread.
     where   newMState = set
                         ((rtsLens mid).rts_threads.(at tid))
                         (Just ThreadState {
-                            _t_parent = tid,
+                            _t_parent = pid,
                             _t_state  = Runnable,
                             _t_timestamp = ts
                             }
                         )
                         mState
     --adjust the parent process, was its state changed?
+            newMState' = over
+                        ((rtsLens mid).rts_processes.(at pid))
+                        adjustParent
+                        newMState
+            adjustParent :: Maybe ProcessState -> Maybe ProcessState
+            adjustParent Nothing = error "Parent process does not exist."
+    --increase Runnable Processes by one.
+            adjustParent (Just p) = let pNew = over p_tRunnable (+1) $ p
+                                    in Just $ setProcessState pNew
 
-{- Utility function to extract the state of a certain thread. -}
-getThreadState :: MultiParserState -> MachineId -> ThreadId -> ThreadState
-getThreadState mState mid tid =
-    fromJust $
-        (fromJust $ mState^.(machineTable.(at mid)))
-        ^.(p_rtsState.rts_threads.(at tid))
 
 runThread :: HandlerType
 runThread mState aEvent@(AssignedEvent (Event ts (RunThread tid)) mid cap) =
@@ -304,5 +347,5 @@ runThread mState aEvent@(AssignedEvent (Event ts (RunThread tid)) mid cap) =
                     startTime = oldThreadState^.t_timestamp,
                     duration  = ts - oldThreadState^.t_timestamp,
                     state     = oldThreadState^.t_state
-                    } : processEvents
+                    } : [] --processEvents
             --if this event changed the state of the overlying process,
