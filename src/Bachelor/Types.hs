@@ -24,7 +24,8 @@ data ProcessState = ProcessState {
     _p_timestamp :: Timestamp,
     _p_tRunning  :: Int,
     _p_tRunnable :: Int,
-    _p_tBlocked  :: Int
+    _p_tBlocked  :: Int,
+    _p_tTotal    :: Int
     } deriving Show
 
 $(makeLenses ''ProcessState)
