@@ -205,27 +205,6 @@ parseNextEventNull pstate =
     Some do not create GUIEvents, so they just return the new ParserState
     Some do create GUIEvents, so they return (ParserState,[GUIEvent])
 -}
--- the following events can directly produce an event, WITHOUT producing
--- additional events:
-
--- CreateMachine
--- CreateProcess
-
--- CreateThread
--- AssignThreadToProcess
-
--- Startup (not sure wether we need this at all.)
--- EdenStartReceive
--- EdenEndReceive
--- SendMessage
--- ReceiveMessage
--- SendReceiveLocalMessage
-
--- these events might generate additional events, so we have to check after
--- WakeupThread (might wake up the process & machine.)
--- StopThread   (might stop the process & machine.)
--- KillProcess  (kill all threads)
--- KillMachine  (kill all Processes)
 
 {- when Events are handled, we need to know from which Eventlog they where
  - sourced, so they are annotated with additional Information:  -}
@@ -237,37 +216,116 @@ data AssignedEvent = AssignedEvent {
 
 $(makeLenses ''AssignedEvent)
 
-type HandlerType = MultiParserState -> AssignedEvent -> (MultiParserState,[GUIEvent])
+type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
 
--- a Lens that given a machine id will produce the corresponding RTSState
-rtsLens mid = (machineTable.(at mid)._Just.p_rtsState)
+handleThreadEvent :: HandlerType
+handleThreadEvent rts aEvent@(AssignedEvent event mid cap) =
+    {-
+     - TODO case switch for the different Thread events.
+     -}
+    --Assumption: Thread handling has been dealt with at this point.
+    (rts,[])
 
+updateProcessCountAndMachineState :: MachineId
+                                    -> Timestamp
+                                    -> MachineState
+                                    -> (Maybe RunState)
+                                    -> (Maybe RunState)
+                                    -> (MachineState, Maybe GUIEvent)
+updateProcessCountAndMachineState mid ts m oldState newState  = let
+    m'  = updateProcessCount m oldState newState
+    m'' = setMachineState m'
+    in if _m_state m == _m_state m''
+        then (m'',Nothing)
+        else (set m_state (_m_state m'')$ set m_timestamp ts $ m'', Just $ GUIEvent {
+            mtpType   = Machine mid,
+            startTime = _m_timestamp m,
+            duration  = ts - _m_timestamp m,
+            state     = _m_state m
+            })
 
-{- Utility function to extract the state of a certain thread. -}
-getThreadState :: MultiParserState -> MachineId -> ThreadId -> ThreadState
-getThreadState mState mid tid =
-    fromJust $
-        (fromJust $ mState^.(machineTable.(at mid)))
-        ^.(p_rtsState.rts_threads.(at tid))
+{- takes a state transition within a Process, and the parent MachineId
+ - and updates the Machine State accordingly. -}
 
-getProcessState :: MultiParserState -> MachineId -> ProcessId -> ProcessState
-getProcessState mState mid pid =
-    fromJust $
-        (fromJust $ mState^.(machineTable.(at mid)))
-        ^.(p_rtsState.rts_processes.(at pid))
+updateProcessCount :: MachineState -> (Maybe RunState) -> (Maybe RunState)
+                      -> MachineState
+updateProcessCount m oldState newState
+    | oldState == newState = m
+    | otherwise = let m' = case oldState of
+                        --decrement the old state counter, or insert the event.
+                        (Just Running)  -> m_pRunning  %~ ((-)1) $ m
+                        (Just Blocked)  -> m_pBlocked  %~ ((-)1) $ m
+                        (Just Runnable) -> m_pRunnable %~ ((-)1) $ m
+                        Nothing         -> m_pTotal    %~ ((+)1) $ m
+                      m'' = case newState of
+                       --increment the new state counter, or remove the event
+                       --from the total
+                        (Just Running)  -> m_pRunning  %~ ((+)1) $ m'
+                        (Just Blocked)  -> m_pBlocked  %~ ((+)1) $ m'
+                        (Just Runnable) -> m_pRunnable %~ ((+)1) $ m'
+                        Nothing         -> m_pTotal    %~ ((-)1) $ m'
+                  in m''
 
-createMachine :: HandlerType
-createMachine mState aEvent = (newMState,[])
-    where   mid       = aEvent^.machine
-            newMState = set ((rtsLens mid).rts_machine)
-                MachineState {
-                        _m_state = Idle,
-                        _m_pRunning = 0,
-                        _m_pRunnable = 0,
-                        _m_pBlocked = 0,
-                        _m_timestamp = time (aEvent^.event)
-                    }
-                mState
+{-
+ - sets the Machine State according to the current Process count.
+ - -}
+setMachineState :: MachineState -> MachineState
+    -- no Processess Assigned, this Machine is idle
+setMachineState m
+                    | _m_pTotal m == 0             = m {_m_state = Idle}
+    --if a single process is running, this Machine will be running.
+                    | _m_pRunning m >0             = m {_m_state = Running}
+    --if all Processes are blocked, this Machine is blocked.
+                    | _m_pBlocked m == _m_pTotal m = m {_m_state = Blocked}
+    --if at least one Process is Runnable, this Machine is runnable.
+                    | _m_pRunnable m >0             = m {_m_state = Runnable}
+
+{-
+ - takes a state transition within a thread and the parent process,
+ - and updates it accordingly.
+ - -}
+updateThreadCountAndProcessState :: MachineId
+                                    -> ProcessId
+                                    -> Timestamp
+                                    -> ProcessState
+                                    -> (Maybe RunState)
+                                    -> (Maybe RunState)
+                                    -> (ProcessState, Maybe GUIEvent)
+updateThreadCountAndProcessState mid pid ts p oldState newState  = let
+    p'  = updateThreadCount p oldState newState
+    p'' = setProcessState p'
+    in if p^.p_state == p''^.p_state
+        then (p'',Nothing)
+        else (set p_state (p''^.p_state) $ set p_timestamp ts $ p'', Just $ GUIEvent {
+            mtpType   = Process mid pid,
+            startTime = p^.p_timestamp,
+            duration  = ts - p^.p_timestamp,
+            state     = p^.p_state
+            })
+
+{-
+ - updates the inner Thread count of a Process. If the Thread was newly
+ - created, oldState is Nothing. If the Thread is being killed, newState
+ - is Nothing.
+ - -}
+updateThreadCount :: ProcessState ->  (Maybe RunState) -> (Maybe RunState)
+                                  ->  ProcessState
+updateThreadCount p oldState newState
+    | oldState == newState = p
+    | otherwise = let p' = case oldState of
+                        --decrement the old state counter, or insert the event.
+                        (Just Running)  -> p_tRunning  %~ ((-)1) $ p
+                        (Just Blocked)  -> p_tBlocked  %~ ((-)1) $ p
+                        (Just Runnable) -> p_tRunnable %~ ((-)1) $ p
+                        Nothing         -> p_tTotal    %~ ((+)1) $ p
+                      p'' = case newState of
+                       --increment the new state counter, or remove the event
+                       --from the total
+                        (Just Running)  -> p_tRunning  %~ ((+)1) $ p'
+                        (Just Blocked)  -> p_tBlocked  %~ ((+)1) $ p'
+                        (Just Runnable) -> p_tRunnable %~ ((+)1) $ p'
+                        Nothing         -> p_tTotal    %~ ((-)1) $ p'
+                  in p''
 
 -- A thread event will adjust the counters of a process event.
 -- this function will then adjust the internal state.
@@ -281,84 +339,3 @@ setProcessState p   | p^.p_tTotal == 0             = p {_p_state = Idle}
     --if at least one Thread is Runnable, this process is runnable.
                     | p^.p_tRunnable >0             = p {_p_state = Runnable}
 
---sets the process state and, if necessary, generates an according event.
-setProcessState' :: ProcessState -> ProcessId -> Timestamp -> (ProcessState,[GUIEvent])
-setProcessState' p pid ts
-                  = let pNew = setProcessState p
-                     in if pNew^.p_state == p^.p_state
-                        -- the state did not change, generate no event
-                        then (pNew,[])
-                        -- the state changed, generate an event.
-                        else (p,[GUIEvent {
-                                mtpType   = Process (p^.p_parent) pid,
-                                startTime = p^.p_timestamp,
-                                duration  = ts - p^.p_timestamp,
-                                state     = p^.p_state
-                                }]
-                            )
-
---applies the function provided in the first argument to the process state,
---then returns an adjusted process state together with any events that may
---be generated by this change.
-setProcessState'' :: ProcessState -> (ProcessState-> ProcessState)
-                     -> ProcessId -> Timestamp -> (ProcessState,[GUIEvent])
-setProcessState'' p f pid ts
-    = let pNew = f p
-      in setProcessState' p pid ts
-
-{- Because Threads are created without an Assigned Thread, we use the
- - AssignThreadToProcess Event to register the creation of an eden event. -}
-createThread :: HandlerType
-createThread mState aEvent@(AssignedEvent (Event ts (AssignThreadToProcess tid pid)) mid cap) =
-    (newMState',parentEvents)
-    --insert the thread.
-    where   newMState = set
-                        ((rtsLens mid).rts_threads.(at tid))
-                        (Just ThreadState {
-                            _t_parent = pid,
-                            _t_state  = Runnable,
-                            _t_timestamp = ts
-                            }
-                        )
-                        mState
-    --get the old parent
-            oldParent = getProcessState mState mid pid
-    --increase runnable count by one
-            f p = over p_tRunnable (+1) $ p
-            (newParent, parentEvents) = setProcessState'' oldParent f pid ts
-    --set the new parent state
-            newMState' = set
-                        ((rtsLens mid).rts_processes.(at pid))
-                        (Just newParent)
-                        newMState
-    --TODO: generate the 'assignment' event
-
-
-
-runThread :: HandlerType
-runThread mState aEvent@(AssignedEvent (Event ts (RunThread tid)) mid cap) =
-    (newMState, guiEvents)
-            --we need the old Thread State, so that we can check wether it
-            --changed, and alos generate the according stop Event.
-    where   oldThreadState = getThreadState mState mid tid
-            --update the state of the thread
-            newMState      = set
-                        ((rtsLens mid).rts_threads.(at tid))
-                        (Just ThreadState {
-                            _t_parent = tid,
-                            _t_state  = Running,
-                            _t_timestamp = ts
-                            }
-                        )
-                        mState
-            --if the thread state changed, then create an event for the
-            --previous state.
-            guiEvents = if (oldThreadState^.t_state == Running)
-                then []
-                else GUIEvent {
-                    mtpType   = Thread mid tid,
-                    startTime = oldThreadState^.t_timestamp,
-                    duration  = ts - oldThreadState^.t_timestamp,
-                    state     = oldThreadState^.t_state
-                    } : [] --processEvents
-            --if this event changed the state of the overlying process,

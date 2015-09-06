@@ -35,7 +35,8 @@ data MachineState = MachineState {
     _m_timestamp :: Timestamp,
     _m_pRunning  :: Int,
     _m_pRunnable :: Int,
-    _m_pBlocked  :: Int
+    _m_pBlocked  :: Int,
+    _m_pTotal    :: Int
     } | PreMachine deriving Show
 
 $(makeLenses ''MachineState)
@@ -106,6 +107,4 @@ class IOEventData a where
 {- auxiliary functions for detecting wether the state has changed, and
  - which events need to be written out to the database -}
 
-generateGUIEvents :: RTSState -> RTSState -> [GUIEvent]
-generateGUIEvents oldRts newRts = undefined
 
