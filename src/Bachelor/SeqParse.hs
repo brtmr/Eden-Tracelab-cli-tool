@@ -221,7 +221,48 @@ type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
 handleEvent :: HandlerType
 handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
     case spec of
+        CreateMachine mid realtime  ->
+            let newMachine = MachineState {
+                _m_state     = Idle,
+                _m_timestamp = ts,
+                _m_pRunning  = 0,
+                _m_pRunnable = 0,
+                _m_pBlocked  = 0,
+                _m_pTotal    = 0
+                }
+                creationEvent = NewMachine mid
+            in (set rts_machine newMachine $ rts, [creationEvent])
+        CreateProcess pid ->
+            let newProcess = ProcessState {
+                _p_parent    = mid,
+                _p_state     = Runnable,
+                _p_timestamp = ts,
+                _p_tRunning  = 0,
+                _p_tRunnable = 0,
+                _p_tBlocked  = 0,
+                _p_tTotal    = 0
+                }
+                creationEvent = NewProcess mid pid
+            in (set (rts_processes.(at pid)) (Just newProcess) $ rts, [])
         RunThread tid ->
+            let oldThread           = (rts^.rts_threads) M.! tid
+                oldState            = oldThread^.t_state
+                pid                 = oldThread^.t_parent
+                oldProcess          = (rts^.rts_processes) M.! pid
+                (newThread,tEvent)  = setThreadState mid tid oldThread ts
+                    oldState
+                (newProcess,pEvent) = updateThreadCountAndProcessState
+                    mid pid ts oldProcess (Just oldState) (Just Running)
+                oldProcessState     = oldProcess^.p_state
+                newProcessState     = newProcess^.p_state
+                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                    (rts^.rts_machine) (Just oldProcessState)
+                    (Just newProcessState)
+                rts' = set rts_machine newMachine $
+                       set (rts_threads.(at tid))   (Just newThread) $
+                       set (rts_processes.(at pid)) (Just newProcess) $ rts
+            in (rts', mList [tEvent, pEvent])
+        StopThread tid _ ->
             let oldThread           = (rts^.rts_threads) M.! tid
                 oldState            = oldThread^.t_state
                 pid                 = oldThread^.t_parent
