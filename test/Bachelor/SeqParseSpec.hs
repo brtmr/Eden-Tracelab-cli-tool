@@ -5,6 +5,7 @@ import Bachelor.SeqParse
 import Bachelor.Types
 import Control.Lens
 import Test.QuickCheck
+import qualified GHC.RTS.Events as Ev
 
 spec :: Spec
 spec = do
@@ -21,10 +22,21 @@ spec = do
         context "MachineState manipulation with updateProcessCount" $ do
             it "sum of processes is always equal to m_pTotal" $ property  $ do
                 sumPropertyMachines
+        --defining tests for handleThreadEvent for each Event is challenging,
+        --but there are multiple property-based tests that can ensure that
+        --the implementation is sound.
+        {-
+        context "Event handling" $ do
+            it "handling and event creates a valid RTSState." $ do
+                undefined
+        -}
 
 main :: IO()
 main = hspec spec
 
+{-
+ - Arbitrary instances.
+ - -}
 instance Arbitrary RunState where
     arbitrary = oneof [return Running,
                        return Runnable,
@@ -66,7 +78,18 @@ instance Arbitrary MachineState where
             _m_pTotal    = running + runnable + blocked
         }
 
+mkThreadState :: Ev.Timestamp -> Ev.ProcessId -> Gen ThreadState
+mkThreadState ts pid = do
+    state <- arbitrary
+    return $ ThreadState {
+        _t_parent      = pid,
+        _t_state       = state,
+        _t_timestamp   = ts
+        }
 
+{-
+helpful values
+-}
 emptyProcess = ProcessState {
     _p_parent    = 1,
     _p_state     = Idle,
@@ -79,7 +102,11 @@ emptyProcess = ProcessState {
 
 addRunningThread p = updateThreadCount p Nothing (Just Running)
 
-{- QuickCheck Property: updating the thread count should always leave
+{-
+ - QuickCheck Properties
+ - -}
+
+ {-updating the thread count should always leave
  - the sum p_tTotal equal to the sum of the threads -}
 sumPropertyProcesses :: ProcessState -> (Maybe RunState) -> (Maybe RunState) -> Bool
 sumPropertyProcesses pstate s1 s2 =
