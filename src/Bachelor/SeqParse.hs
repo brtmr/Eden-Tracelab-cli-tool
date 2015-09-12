@@ -244,6 +244,14 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 }
                 creationEvent = NewProcess mid pid
             in (set (rts_processes.(at pid)) (Just newProcess) $ rts, [])
+        AssignThreadToProcess tid pid ->
+            let newThread = ThreadState {
+                _t_parent      = pid,
+                _t_state       = Runnable,
+                _t_timestamp   = ts
+                }
+                creationEvent = NewThread mid tid
+            in (set (rts_threads.(at tid)) (Just newThread) $ rts, [])
         RunThread tid ->
             let oldThread           = (rts^.rts_threads) M.! tid
                 oldState            = oldThread^.t_state
