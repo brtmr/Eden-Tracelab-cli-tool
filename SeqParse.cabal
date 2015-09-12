@@ -101,6 +101,7 @@ test-suite spec
                        seqparse,
                        hspec,
                        QuickCheck,
+                       ghc-events-parallel,
                        lens
 
   default-language:    Haskell2010
