@@ -253,17 +253,18 @@ updateProcessCount m oldState newState
     | oldState == newState = m
     | otherwise = let m' = case oldState of
                         --decrement the old state counter, or insert the event.
-                        (Just Running)  -> m_pRunning  %~ ((-)1) $ m
-                        (Just Blocked)  -> m_pBlocked  %~ ((-)1) $ m
-                        (Just Runnable) -> m_pRunnable %~ ((-)1) $ m
-                        Nothing         -> m_pTotal    %~ ((+)1) $ m
+                        (Just Running)  -> m_pRunning  %~ (\x -> x-1) $ m
+                        (Just Blocked)  -> m_pBlocked  %~ (\x -> x-1) $ m
+                        (Just Runnable) -> m_pRunnable %~ (\x -> x-1) $ m
+                        (Just Runnable) -> m_pRunnable %~ (\x -> x-1) $ m
+                        Nothing         -> m_pTotal    %~ (\x -> x+1) $ m
                       m'' = case newState of
                        --increment the new state counter, or remove the event
                        --from the total
-                        (Just Running)  -> m_pRunning  %~ ((+)1) $ m'
-                        (Just Blocked)  -> m_pBlocked  %~ ((+)1) $ m'
-                        (Just Runnable) -> m_pRunnable %~ ((+)1) $ m'
-                        Nothing         -> m_pTotal    %~ ((-)1) $ m'
+                        (Just Running)  -> m_pRunning  %~ (\x -> x+1) $ m'
+                        (Just Blocked)  -> m_pBlocked  %~ (\x -> x+1) $ m'
+                        (Just Runnable) -> m_pRunnable %~ (\x -> x+1) $ m'
+                        Nothing         -> m_pTotal    %~ (\x -> x-1) $ m'
                   in m''
 
 {-
