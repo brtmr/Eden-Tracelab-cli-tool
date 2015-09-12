@@ -70,32 +70,6 @@ $(makeLenses ''MultiParserState)
 -- paths:
 testdir = "/home/basti/bachelor/traces/mergesort_small/"
 
--- instead of parsing a single *.eventlog file, we want to parse a *.parevents
--- file, which is a zipfile containing a set of *.eventlog files, one for
--- every Machine used.
--- because reading from a zipfile lazily seems somewhat troubling, we will
--- instead unzip all files beforehand and then read them all as single files.
-run :: FilePath -> IO()
-run dir = do
-    -- filter the directory contents into eventlogs.
-    paths <- filter (isSuffixOf ".eventlog") <$> Dir.getDirectoryContents dir
-        -- prepend the directory.
-    let files = map (\x -> dir ++ x) paths
-        -- extract the machine number.
-        mids  = map extractNumber paths
-    -- connect to the DataBase, and enter a new trace, with the current
-    -- directory and time.
-    dbi <- DB.createDBInfo dir
-    -- create a parserState for each eventLog file.
-    pStates <- zip mids <$> mapM createParserState files
-    -- create the multistate that encompasses all machines.
-    let mState = MultiParserState {
-        _machineTable = M.fromList pStates,
-        _con = dbi}
-    print mState
-    -- for testing purposes only: test the first machine
-    let m1 = fromJust $ (mState^.machineTable^.(at 2))
-    parseSingleEventLog dbi 2 m1
 
 {-
  - each eventLog file has the number of the according machine (this pe) stored
@@ -128,54 +102,6 @@ getFirstCapState bs pt cap =
         _                  -> error $ "failed parsing the first event for cap " ++ (show cap) ++ "\n"
                                       ++ (show $ LB.take 20 bs)
 
-{-
- - This is the main function for parsing a single event log and storing
- - the events contained within into the database.
- - -}
-parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
--- event blocks need to be skipped without handling them.
--- System EventBlock
-parseSingleEventLog dbi mid pstate@(ParserState
-    (bss,evs@(Just (Event _ EventBlock{})))
-    _ rts pt) = parseSingleEventLog dbi mid $ parseNextEventSystem pstate
--- Cap 0 EventBlock
-parseSingleEventLog dbi mid pstate@(ParserState
-  _ (bs0,e0@(Just (Event _ EventBlock{})))
-    rts pt) = parseSingleEventLog dbi mid $ parseNextEventNull pstate
--- both capabilies still have events left. return the earlier one.
-parseSingleEventLog dbi mid pstate@(ParserState
-    (bss,evs@(Just (Event tss specs)))
-    (bs0,ev0@(Just (Event ts0 spec0)))
-    rts pt) = if (tss < ts0)
-        then do
-            putStrLn "System cap."
-            print evs
-            parseSingleEventLog dbi mid $ parseNextEventSystem pstate
-        else do
-            putStrLn "cap. 0"
-            print ev0
-            parseSingleEventLog dbi mid $ parseNextEventNull pstate
--- no more system events.
-parseSingleEventLog dbi mid pstate@(ParserState
-    (bss,evs@Nothing)
-    (bs0,ev0@(Just (Event ts0 spec0)))
-    rts pt) = do
-            putStrLn "cap. 0"
-            print ev0
-            parseSingleEventLog dbi mid $ parseNextEventNull pstate
--- no more cap0 events.
-parseSingleEventLog dbi mid pstate@(ParserState
-    (bss,evs@(Just (Event tss specs)))
-    (bs0,ev0@Nothing)
-    rts pt) = do
-            putStrLn "System cap."
-            print evs
-            parseSingleEventLog dbi mid $ parseNextEventSystem pstate
--- no more events.
-parseSingleEventLog dbi mid pstate@(ParserState
-    (bss,evs@Nothing)
-    (bs0,ev0@Nothing)
-    rts pt) = return ()
 
 -- takes the parser state of a capability
 -- replaces the event with the next one in the bytstring.
@@ -217,14 +143,12 @@ data AssignedEvent = AssignedEvent {
 $(makeLenses ''AssignedEvent)
 
 type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
-
-
 {-
  - This is the main function to handle events,
  - manipulate the rts state, and generate GUI Events.
  - -}
-handleEvent :: HandlerType
-handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
+handleEvents :: HandlerType
+handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
     case spec of
         KillProcess pid ->
                 killProcess rts mid pid ts
@@ -259,8 +183,19 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 _t_state       = Runnable,
                 _t_timestamp   = ts
                 }
-                creationEvent = NewThread mid tid
-            in (set (rts_threads.(at tid)) (Just newThread) $ rts, [])
+                creationEvent  = Just $ NewThread mid pid tid
+                oldProcess          = (rts^.rts_processes) M.! pid
+                (newProcess,pEvent) = updateThreadCountAndProcessState
+                    mid pid ts oldProcess Nothing (Just Runnable)
+                oldProcessState     = oldProcess^.p_state
+                newProcessState     = newProcess^.p_state
+                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                    (rts^.rts_machine) (Just oldProcessState)
+                    (Just newProcessState)
+                rts' = set rts_machine newMachine $
+                       set (rts_threads.(at tid))   (Just newThread) $
+                       set (rts_processes.(at pid)) (Just newProcess) $ rts
+            in (rts', mList [creationEvent, pEvent, mEvent])
         RunThread tid ->
             let oldThread           = (rts^.rts_threads) M.! tid
                 oldState            = oldThread^.t_state
@@ -287,7 +222,7 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 (newThread,tEvent)  = setThreadState mid tid oldThread ts
                     oldState
                 (newProcess,pEvent) = updateThreadCountAndProcessState
-                    mid pid ts oldProcess (Just oldState) (Just Running)
+                    mid pid ts oldProcess (Just oldState) (Just Blocked)
                 oldProcessState     = oldProcess^.p_state
                 newProcessState     = newProcess^.p_state
                 (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
@@ -490,3 +425,96 @@ setProcessState p   | p^.p_tTotal == 0             = p {_p_state = Idle}
     --if at least one Thread is Runnable, this process is runnable.
                     | p^.p_tRunnable >0             = p {_p_state = Runnable}
 
+
+-- instead of parsing a single *.eventlog file, we want to parse a *.parevents
+-- file, which is a zipfile containing a set of *.eventlog files, one for
+-- every Machine used.
+-- because reading from a zipfile lazily seems somewhat troubling, we will
+-- instead unzip all files beforehand and then read them all as single files.
+run :: FilePath -> IO()
+run dir = do
+    -- filter the directory contents into eventlogs.
+    paths <- filter (isSuffixOf ".eventlog") <$> Dir.getDirectoryContents dir
+        -- prepend the directory.
+    let files = map (\x -> dir ++ x) paths
+        -- extract the machine number.
+        mids  = map extractNumber paths
+    -- connect to the DataBase, and enter a new trace, with the current
+    -- directory and time.
+    dbi <- DB.createDBInfo dir
+    -- create a parserState for each eventLog file.
+    pStates <- zip mids <$> mapM createParserState files
+    -- create the multistate that encompasses all machines.
+    let mState = MultiParserState {
+        _machineTable = M.fromList pStates,
+        _con = dbi}
+    print mState
+    -- for testing purposes only: test the first machine
+    let m1 = fromJust $ (mState^.machineTable^.(at 2))
+    parseSingleEventLog dbi 2 m1
+
+{-
+ - This is the main function for parsing a single event log and storing
+ - the events contained within into the database.
+ - -}
+parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
+-- event blocks need to be skipped without handling them.
+-- System EventBlock
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just (Event _ EventBlock{})))
+    _ rts pt) = parseSingleEventLog dbi mid $ parseNextEventSystem pstate
+-- Cap 0 EventBlock
+parseSingleEventLog dbi mid pstate@(ParserState
+  _ (bs0,e0@(Just (Event _ EventBlock{})))
+    rts pt) = parseSingleEventLog dbi mid $ parseNextEventNull pstate
+-- both capabilies still have events left. return the earlier one.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just es@(Event tss specs)))
+    (bs0,ev0@(Just e0@(Event ts0 spec0)))
+    rts pt) = if (tss < ts0)
+        then do
+            let aEvent = AssignedEvent es mid (-1)
+                (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
+                pstate' = set p_rtsState newRTS $ pstate
+            print $ pstate^.p_rtsState
+            print es
+            print guiEvents
+            parseSingleEventLog dbi mid $ parseNextEventSystem pstate'
+        else do
+            let aEvent = AssignedEvent e0 mid 0
+                (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
+                pstate' = set p_rtsState newRTS $ pstate
+            print $ pstate^.p_rtsState
+            print e0
+            print guiEvents
+            parseSingleEventLog dbi mid $ parseNextEventNull pstate'
+
+-- no more system events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@Nothing)
+    (bs0,ev0@(Just e0@(Event ts0 spec0)))
+    rts pt) = do
+            let aEvent = AssignedEvent e0 mid 0
+                (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
+                pstate' = set p_rtsState newRTS $ pstate
+            print $ pstate^.p_rtsState
+            print e0
+            print guiEvents
+            parseSingleEventLog dbi mid $ parseNextEventNull pstate'
+-- no more cap0 events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@(Just es@(Event tss specs)))
+    (bs0,ev0@Nothing)
+    rts pt) = do
+            let aEvent = AssignedEvent es mid (-1)
+                (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
+                pstate' = set p_rtsState newRTS $ pstate
+            print $ pstate^.p_rtsState
+            print es
+            print guiEvents
+            parseSingleEventLog dbi mid $ parseNextEventSystem pstate'
+-- no more events.
+parseSingleEventLog dbi mid pstate@(ParserState
+    (bss,evs@Nothing)
+    (bs0,ev0@Nothing)
+    rts pt) = return ()

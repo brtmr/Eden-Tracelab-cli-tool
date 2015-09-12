@@ -76,7 +76,7 @@ makeRTSState mid = RTSState {
 
 data MtpType = Machine MachineId
     | Process MachineId ProcessId
-    | Thread  MachineId ThreadId deriving Show
+    | Thread  MachineId ThreadId deriving (Eq, Show)
 
 startingState :: RTSState
 startingState = RTSState PreMachine M.empty M.empty
@@ -91,7 +91,7 @@ data GUIEvent = GUIEvent{
     duration  :: Word64,
     state     :: RunState
     } | NewMachine MachineId | NewProcess MachineId ProcessId
-      | NewThread MachineId ProcessId ThreadId
+      | NewThread MachineId ProcessId ThreadId deriving (Eq, Show)
 
 --  | The Interface for reading/writing the data from disk.
 class IOEventData a where
