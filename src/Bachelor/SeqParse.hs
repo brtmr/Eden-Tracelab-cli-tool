@@ -218,13 +218,49 @@ $(makeLenses ''AssignedEvent)
 
 type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
 
-handleThreadEvent :: HandlerType
-handleThreadEvent rts aEvent@(AssignedEvent event mid cap) =
-    {-
-     - TODO case switch for the different Thread events.
-     -}
-    --Assumption: Thread handling has been dealt with at this point.
-    (rts,[])
+handleEvent :: HandlerType
+handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
+    case spec of
+        RunThread tid ->
+            let oldThread           = (rts^.rts_threads) M.! tid
+                oldState            = oldThread^.t_state
+                pid                 = oldThread^.t_parent
+                oldProcess          = (rts^.rts_processes) M.! pid
+                (newThread,tEvent)  = setThreadState mid tid oldThread ts
+                    oldState
+                (newProcess,pEvent) = updateThreadCountAndProcessState
+                    mid pid ts oldProcess (Just oldState) (Just Running)
+                oldProcessState     = oldProcess^.p_state
+                newProcessState     = newProcess^.p_state
+                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                    (rts^.rts_machine) (Just oldProcessState)
+                    (Just newProcessState)
+                rts' = set rts_machine newMachine $
+                       set (rts_threads.(at tid))   (Just newThread) $
+                       set (rts_processes.(at pid)) (Just newProcess) $ rts
+            in (rts', mList [tEvent, pEvent])
+        _ -> (rts,[])
+
+
+{-
+ - We often have to deal with lists of type [Maybe GUIEvent], and want to
+ - filter the actual events.
+ - -}
+mList = (map fromJust).(filter isJust)
+
+setThreadState :: MachineId -> ThreadId -> ThreadState -> Timestamp -> RunState
+                    -> (ThreadState, Maybe GUIEvent)
+setThreadState mid tid t ts state
+    | t^.t_state == state = (t,Nothing)
+    | otherwise = (t {
+        _t_state       = state,
+        _t_timestamp   = ts
+        }, Just $ GUIEvent {
+            mtpType   = Thread mid tid,
+            startTime = t^.t_timestamp,
+            duration  = ts - t^.t_timestamp,
+            state     = t^.t_state
+            })
 
 updateProcessCountAndMachineState :: MachineId
                                     -> Timestamp
@@ -251,11 +287,11 @@ updateProcessCount :: MachineState -> (Maybe RunState) -> (Maybe RunState)
                       -> MachineState
 updateProcessCount m oldState newState
     | oldState == newState = m
+    | (oldState == Just Idle) || (newState == Just Idle) = m
     | otherwise = let m' = case oldState of
                         --decrement the old state counter, or insert the event.
                         (Just Running)  -> m_pRunning  %~ (\x -> x-1) $ m
                         (Just Blocked)  -> m_pBlocked  %~ (\x -> x-1) $ m
-                        (Just Runnable) -> m_pRunnable %~ (\x -> x-1) $ m
                         (Just Runnable) -> m_pRunnable %~ (\x -> x-1) $ m
                         Nothing         -> m_pTotal    %~ (\x -> x+1) $ m
                       m'' = case newState of
