@@ -218,9 +218,18 @@ $(makeLenses ''AssignedEvent)
 
 type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
 
+
+{-
+ - This is the main function to handle events,
+ - manipulate the rts state, and generate GUI Events.
+ - -}
 handleEvent :: HandlerType
 handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
     case spec of
+        KillProcess pid ->
+                killProcess rts mid pid ts
+        KillMachine mid ->
+                killMachine rts mid ts
         CreateMachine mid realtime  ->
             let newMachine = MachineState {
                 _m_state     = Idle,
@@ -269,7 +278,7 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 rts' = set rts_machine newMachine $
                        set (rts_threads.(at tid))   (Just newThread) $
                        set (rts_processes.(at pid)) (Just newProcess) $ rts
-            in (rts', mList [tEvent, pEvent])
+            in (rts', mList [tEvent, pEvent, mEvent])
         StopThread tid _ ->
             let oldThread           = (rts^.rts_threads) M.! tid
                 oldState            = oldThread^.t_state
@@ -287,7 +296,25 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 rts' = set rts_machine newMachine $
                        set (rts_threads.(at tid))   (Just newThread) $
                        set (rts_processes.(at pid)) (Just newProcess) $ rts
-            in (rts', mList [tEvent, pEvent])
+            in (rts', mList [tEvent, pEvent, mEvent])
+        ThreadRunnable tid ->
+            let oldThread           = (rts^.rts_threads) M.! tid
+                oldState            = oldThread^.t_state
+                pid                 = oldThread^.t_parent
+                oldProcess          = (rts^.rts_processes) M.! pid
+                (newThread,tEvent)  = setThreadState mid tid oldThread ts
+                    oldState
+                (newProcess,pEvent) = updateThreadCountAndProcessState
+                    mid pid ts oldProcess (Just oldState) (Just Runnable)
+                oldProcessState     = oldProcess^.p_state
+                newProcessState     = newProcess^.p_state
+                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                    (rts^.rts_machine) (Just oldProcessState)
+                    (Just newProcessState)
+                rts' = set rts_machine newMachine $
+                       set (rts_threads.(at tid))   (Just newThread) $
+                       set (rts_processes.(at pid)) (Just newProcess) $ rts
+            in (rts', mList [tEvent, pEvent, mEvent])
         _ -> (rts,[])
 
 
@@ -296,6 +323,42 @@ handleEvent rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
  - filter the actual events.
  - -}
 mList = (map fromJust).(filter isJust)
+
+killMachine :: RTSState -> MachineId -> Timestamp -> (RTSState, [GUIEvent])
+killMachine rts mid ts = let
+    pids     = map fst $ M.toList $ rts^.rts_processes
+    ptEvents = concat $ map (snd.(\pid->killProcess rts mid pid ts)) pids
+    m        = rts^.rts_machine
+    mEvent   = GUIEvent {
+            mtpType   = Machine mid,
+            startTime = _m_timestamp m,
+            duration  = ts - _m_timestamp m,
+            state     = _m_state m
+        }
+    in (RTSState PreMachine M.empty M.empty, mEvent:ptEvents)
+
+killProcess :: RTSState -> MachineId -> ProcessId -> Timestamp -> (RTSState, [GUIEvent])
+killProcess rts mid pid ts = let
+        endThread :: (ThreadId,ThreadState) -> GUIEvent
+        endThread (tid,t) = GUIEvent {
+                mtpType   = Thread mid tid,
+                startTime = t^.t_timestamp,
+                duration  = ts - t^.t_timestamp,
+                state     = t^.t_state }
+        tEvents = map endThread
+            $ filter (\(tid,t) -> t^.t_parent == pid)
+            $ M.toList (rts^.rts_threads)
+        rts'    = over rts_threads (M.filter (\x -> x^.t_parent/=pid)) $ rts
+        rts''   = set (rts_processes.(at pid)) Nothing $ rts'
+        p       = (rts^.rts_processes) M.! pid
+        pEvent  = GUIEvent {
+            mtpType   = Process mid pid,
+            startTime = p^.p_timestamp,
+            duration  = ts - p^.p_timestamp,
+            state     = p^.p_state
+            }
+    in (rts'', pEvent:tEvents)
+
 
 setThreadState :: MachineId -> ThreadId -> ThreadState -> Timestamp -> RunState
                     -> (ThreadState, Maybe GUIEvent)
