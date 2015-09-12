@@ -176,7 +176,12 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 _p_tTotal    = 0
                 }
                 creationEvent = NewProcess mid pid
-            in (set (rts_processes.(at pid)) (Just newProcess) $ rts, [])
+                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                    (rts^.rts_machine) Nothing (Just Runnable)
+                rts' = set (rts_processes.(at pid)) (Just newProcess)
+                    $  set rts_machine newMachine
+                    $  rts
+            in (rts', mList [mEvent])
         AssignThreadToProcess tid pid ->
             let newThread = ThreadState {
                 _t_parent      = pid,
@@ -193,63 +198,15 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                     (rts^.rts_machine) (Just oldProcessState)
                     (Just newProcessState)
                 rts' = set rts_machine newMachine $
-                       set (rts_threads.(at tid))   (Just newThread) $
+                       set (rts_threads.(at tid))   (Just newThread)   $
                        set (rts_processes.(at pid)) (Just newProcess) $ rts
             in (rts', mList [creationEvent, pEvent, mEvent])
         RunThread tid ->
-            let oldThread           = (rts^.rts_threads) M.! tid
-                oldState            = oldThread^.t_state
-                pid                 = oldThread^.t_parent
-                oldProcess          = (rts^.rts_processes) M.! pid
-                (newThread,tEvent)  = setThreadState mid tid oldThread ts
-                    oldState
-                (newProcess,pEvent) = updateThreadCountAndProcessState
-                    mid pid ts oldProcess (Just oldState) (Just Running)
-                oldProcessState     = oldProcess^.p_state
-                newProcessState     = newProcess^.p_state
-                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
-                    (rts^.rts_machine) (Just oldProcessState)
-                    (Just newProcessState)
-                rts' = set rts_machine newMachine $
-                       set (rts_threads.(at tid))   (Just newThread) $
-                       set (rts_processes.(at pid)) (Just newProcess) $ rts
-            in (rts', mList [tEvent, pEvent, mEvent])
+            changeThreadState rts mid tid Running ts
         StopThread tid _ ->
-            let oldThread           = (rts^.rts_threads) M.! tid
-                oldState            = oldThread^.t_state
-                pid                 = oldThread^.t_parent
-                oldProcess          = (rts^.rts_processes) M.! pid
-                (newThread,tEvent)  = setThreadState mid tid oldThread ts
-                    oldState
-                (newProcess,pEvent) = updateThreadCountAndProcessState
-                    mid pid ts oldProcess (Just oldState) (Just Blocked)
-                oldProcessState     = oldProcess^.p_state
-                newProcessState     = newProcess^.p_state
-                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
-                    (rts^.rts_machine) (Just oldProcessState)
-                    (Just newProcessState)
-                rts' = set rts_machine newMachine $
-                       set (rts_threads.(at tid))   (Just newThread) $
-                       set (rts_processes.(at pid)) (Just newProcess) $ rts
-            in (rts', mList [tEvent, pEvent, mEvent])
+            changeThreadState rts mid tid Blocked ts
         ThreadRunnable tid ->
-            let oldThread           = (rts^.rts_threads) M.! tid
-                oldState            = oldThread^.t_state
-                pid                 = oldThread^.t_parent
-                oldProcess          = (rts^.rts_processes) M.! pid
-                (newThread,tEvent)  = setThreadState mid tid oldThread ts
-                    oldState
-                (newProcess,pEvent) = updateThreadCountAndProcessState
-                    mid pid ts oldProcess (Just oldState) (Just Runnable)
-                oldProcessState     = oldProcess^.p_state
-                newProcessState     = newProcess^.p_state
-                (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
-                    (rts^.rts_machine) (Just oldProcessState)
-                    (Just newProcessState)
-                rts' = set rts_machine newMachine $
-                       set (rts_threads.(at tid))   (Just newThread) $
-                       set (rts_processes.(at pid)) (Just newProcess) $ rts
-            in (rts', mList [tEvent, pEvent, mEvent])
+            changeThreadState rts mid tid Runnable ts
         _ -> (rts,[])
 
 
@@ -258,6 +215,35 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
  - filter the actual events.
  - -}
 mList = (map fromJust).(filter isJust)
+
+{-
+ - generalized function for changing the state of a thread, and updating
+ - the parent process and machine.
+ -}
+changeThreadState :: RTSState -> MachineId -> ThreadId -> RunState-> Timestamp
+                     -> (RTSState, [GUIEvent])
+changeThreadState rts mid tid state ts =
+    if M.member tid (rts^.rts_threads)
+        then let
+            oldThread           = (rts^.rts_threads) M.! tid
+            oldState            = oldThread^.t_state
+            pid                 = oldThread^.t_parent
+            oldProcess          = (rts^.rts_processes) M.! pid
+            (newThread,tEvent)  = setThreadState mid tid oldThread ts
+                state
+            (newProcess,pEvent) = updateThreadCountAndProcessState
+                mid pid ts oldProcess (Just oldState) (Just state)
+            oldProcessState     = oldProcess^.p_state
+            newProcessState     = newProcess^.p_state
+            (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                (rts^.rts_machine) (Just oldProcessState)
+                (Just newProcessState)
+            rts' = set rts_machine newMachine $
+                   set (rts_threads.(at tid))   (Just newThread)  $
+                   set (rts_processes.(at pid)) (Just newProcess) $ rts
+        in (rts', mList [tEvent, pEvent, mEvent])
+    --ignore 'homeless' threads.
+    else (rts,[])
 
 killMachine :: RTSState -> MachineId -> Timestamp -> (RTSState, [GUIEvent])
 killMachine rts mid ts = let
@@ -286,13 +272,16 @@ killProcess rts mid pid ts = let
         rts'    = over rts_threads (M.filter (\x -> x^.t_parent/=pid)) $ rts
         rts''   = set (rts_processes.(at pid)) Nothing $ rts'
         p       = (rts^.rts_processes) M.! pid
-        pEvent  = GUIEvent {
+        pEvent  = Just $ GUIEvent {
             mtpType   = Process mid pid,
             startTime = p^.p_timestamp,
             duration  = ts - p^.p_timestamp,
             state     = p^.p_state
             }
-    in (rts'', pEvent:tEvents)
+        (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+            (rts^.rts_machine) (Just (p^.p_state)) Nothing
+        rts''' = set rts_machine newMachine $ rts''
+    in (rts''', mList [pEvent,mEvent] ++ tEvents)
 
 
 setThreadState :: MachineId -> ThreadId -> ThreadState -> Timestamp -> RunState
@@ -337,17 +326,17 @@ updateProcessCount m oldState newState
     | (oldState == Just Idle) || (newState == Just Idle) = m
     | otherwise = let m' = case oldState of
                         --decrement the old state counter, or insert the event.
-                        (Just Running)  -> m_pRunning  %~ (\x -> x-1) $ m
-                        (Just Blocked)  -> m_pBlocked  %~ (\x -> x-1) $ m
-                        (Just Runnable) -> m_pRunnable %~ (\x -> x-1) $ m
-                        Nothing         -> m_pTotal    %~ (\x -> x+1) $ m
+                        (Just Running)  -> m_pRunning  %~ decr $ m
+                        (Just Blocked)  -> m_pBlocked  %~ decr $ m
+                        (Just Runnable) -> m_pRunnable %~ decr $ m
+                        Nothing         -> m_pTotal    %~ incr $ m
                       m'' = case newState of
                        --increment the new state counter, or remove the event
                        --from the total
-                        (Just Running)  -> m_pRunning  %~ (\x -> x+1) $ m'
-                        (Just Blocked)  -> m_pBlocked  %~ (\x -> x+1) $ m'
-                        (Just Runnable) -> m_pRunnable %~ (\x -> x+1) $ m'
-                        Nothing         -> m_pTotal    %~ (\x -> x-1) $ m'
+                        (Just Running)  -> m_pRunning  %~ incr $ m'
+                        (Just Blocked)  -> m_pBlocked  %~ incr $ m'
+                        (Just Runnable) -> m_pRunnable %~ incr $ m'
+                        Nothing         -> m_pTotal    %~ decr $ m'
                   in m''
 
 {-
@@ -392,6 +381,9 @@ updateThreadCountAndProcessState mid pid ts p oldState newState  = let
  - created, oldState is Nothing. If the Thread is being killed, newState
  - is Nothing.
  - -}
+
+incr x = x + 1
+decr x = if (x - 1) >= 0 then x-1 else error "Negative count"
 updateThreadCount :: ProcessState ->  (Maybe RunState) -> (Maybe RunState)
                                   ->  ProcessState
 updateThreadCount p oldState newState
@@ -400,17 +392,17 @@ updateThreadCount p oldState newState
     | (oldState == Just Idle) || (newState == Just Idle) = p
     | otherwise = let p' = case oldState of
                         --decrement the old state counter, or insert the event.
-                        (Just Running)  -> p_tRunning  %~ (\x -> x-1) $ p
-                        (Just Blocked)  -> p_tBlocked  %~ (\x -> x-1) $ p
-                        (Just Runnable) -> p_tRunnable %~ (\x -> x-1) $ p
-                        Nothing         -> p_tTotal    %~ (\x -> x+1) $ p
+                        (Just Running)  -> p_tRunning  %~ decr $ p
+                        (Just Blocked)  -> p_tBlocked  %~ decr $ p
+                        (Just Runnable) -> p_tRunnable %~ decr $ p
+                        Nothing         -> p_tTotal    %~ incr $ p
                       p'' = case newState of
                        --increment the new state counter, or remove the event
                        --from the total
-                        (Just Running)  -> p_tRunning  %~ (\x -> x+1) $ p'
-                        (Just Blocked)  -> p_tBlocked  %~ (\x -> x+1) $ p'
-                        (Just Runnable) -> p_tRunnable %~ (\x -> x+1) $ p'
-                        Nothing         -> p_tTotal    %~ (\x -> x-1) $ p'
+                        (Just Running)  -> p_tRunning  %~ incr $ p'
+                        (Just Blocked)  -> p_tBlocked  %~ incr $ p'
+                        (Just Runnable) -> p_tRunnable %~ incr $ p'
+                        Nothing         -> p_tTotal    %~ decr $ p'
                   in p''
 
 -- A thread event will adjust the counters of a process event.
@@ -476,6 +468,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent es mid (-1)
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
+            print "================================================="
             print $ pstate^.p_rtsState
             print es
             print guiEvents
@@ -484,6 +477,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent e0 mid 0
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
+            print "================================================="
             print $ pstate^.p_rtsState
             print e0
             print guiEvents
@@ -497,6 +491,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent e0 mid 0
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
+            print "================================================="
             print $ pstate^.p_rtsState
             print e0
             print guiEvents
@@ -509,6 +504,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent es mid (-1)
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
+            print "================================================="
             print $ pstate^.p_rtsState
             print es
             print guiEvents
