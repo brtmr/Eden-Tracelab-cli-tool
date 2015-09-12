@@ -312,19 +312,21 @@ updateThreadCount :: ProcessState ->  (Maybe RunState) -> (Maybe RunState)
                                   ->  ProcessState
 updateThreadCount p oldState newState
     | oldState == newState = p
+    --for testing, threads cannot be idle.
+    | (oldState == Just Idle) || (newState == Just Idle) = p
     | otherwise = let p' = case oldState of
                         --decrement the old state counter, or insert the event.
-                        (Just Running)  -> p_tRunning  %~ ((-)1) $ p
-                        (Just Blocked)  -> p_tBlocked  %~ ((-)1) $ p
-                        (Just Runnable) -> p_tRunnable %~ ((-)1) $ p
-                        Nothing         -> p_tTotal    %~ ((+)1) $ p
+                        (Just Running)  -> p_tRunning  %~ (\x -> x-1) $ p
+                        (Just Blocked)  -> p_tBlocked  %~ (\x -> x-1) $ p
+                        (Just Runnable) -> p_tRunnable %~ (\x -> x-1) $ p
+                        Nothing         -> p_tTotal    %~ (\x -> x+1) $ p
                       p'' = case newState of
                        --increment the new state counter, or remove the event
                        --from the total
-                        (Just Running)  -> p_tRunning  %~ ((+)1) $ p'
-                        (Just Blocked)  -> p_tBlocked  %~ ((+)1) $ p'
-                        (Just Runnable) -> p_tRunnable %~ ((+)1) $ p'
-                        Nothing         -> p_tTotal    %~ ((-)1) $ p'
+                        (Just Running)  -> p_tRunning  %~ (\x -> x+1) $ p'
+                        (Just Blocked)  -> p_tBlocked  %~ (\x -> x+1) $ p'
+                        (Just Runnable) -> p_tRunnable %~ (\x -> x+1) $ p'
+                        Nothing         -> p_tTotal    %~ (\x -> x-1) $ p'
                   in p''
 
 -- A thread event will adjust the counters of a process event.

@@ -26,7 +26,7 @@ data ProcessState = ProcessState {
     _p_tRunnable :: Int,
     _p_tBlocked  :: Int,
     _p_tTotal    :: Int
-    } deriving Show
+    } deriving (Show, Eq)
 
 $(makeLenses ''ProcessState)
 
@@ -103,8 +103,3 @@ class IOEventData a where
         -> IO [GUIEvent]
     -- | writes a single Event to Disk
     writeEvent :: IOEventData a => a -> GUIEvent -> IO()
-
-{- auxiliary functions for detecting wether the state has changed, and
- - which events need to be written out to the database -}
-
-
