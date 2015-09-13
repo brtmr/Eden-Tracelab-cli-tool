@@ -122,16 +122,38 @@ insertEvent :: DBInfo -> GUIEvent -> IO DBInfo
 insertEvent dbi (NewMachine mid)        = insertMachine dbi mid
 insertEvent dbi (NewProcess mid pid)    = insertProcess dbi mid pid
 insertEvent dbi (NewThread mid pid tid) = insertThread  dbi mid pid tid
+insertEvent dbi (GUIEvent mtpType start dur state) =
+    case mtpType of
+        Machine mid      -> insertMachineState dbi mid start dur state
+        Process mid pid  -> insertProcessState dbi mid pid start dur state
+        _                -> return dbi
+
 
 insertMachineStateQuery :: Query
 insertMachineStateQuery =
-    "Insert into machine_events(machine_id, starttime, duration, runstate)\
+    "Insert into machine_events(machine_id, starttime, duration, state)\
     \values( ? , ? , ? , ? );"
 
-insertMachineState :: DBInfo -> MachineId -> Timestamp -> Timestamp -> RunState -> IO()
+insertMachineState :: DBInfo -> MachineId -> Timestamp -> Timestamp -> RunState
+    -> IO DBInfo
 insertMachineState dbi mid start duration state = do
     let conn = db_connection dbi
         machineKey = (db_machines dbi) M.! mid
-    execute conn insertMachineStateQuery (start, duration, stateToInt state)
-    return ()
+    execute conn insertMachineStateQuery
+        (machineKey, start, duration, stateToInt state)
+    return dbi
+
+insertProcessStateQuery :: Query
+insertProcessStateQuery =
+    "Insert into process_events(process_id, starttime, duration, state)\
+    \values( ? , ? , ? , ? );"
+
+insertProcessState :: DBInfo -> MachineId -> ProcessId -> Timestamp -> Timestamp
+    -> RunState -> IO DBInfo
+insertProcessState dbi mid pid start duration state = do
+    let conn = db_connection dbi
+        processKey = (db_processes dbi) M.! (mid,pid)
+    execute conn insertProcessStateQuery
+        (processKey, start, duration, stateToInt state)
+    return dbi
 
