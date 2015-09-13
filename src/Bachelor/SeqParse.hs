@@ -8,6 +8,7 @@ module Bachelor.SeqParse where
 import Bachelor.Parsers
 import Bachelor.Types
 import Control.Applicative
+import Control.Monad
 import Control.Lens
 import Data.List
 import Data.Map.Lens
@@ -181,7 +182,7 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 rts' = set (rts_processes.(at pid)) (Just newProcess)
                     $  set rts_machine newMachine
                     $  rts
-            in (rts', mList [mEvent])
+            in (rts', creationEvent : mList [mEvent])
         AssignThreadToProcess tid pid ->
             let newThread = ThreadState {
                 _t_parent      = pid,
@@ -468,19 +469,13 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent es mid (-1)
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
-            print "================================================="
-            print $ pstate^.p_rtsState
-            print es
-            print guiEvents
+            dbi <- foldM DB.insertEvent dbi guiEvents
             parseSingleEventLog dbi mid $ parseNextEventSystem pstate'
         else do
             let aEvent = AssignedEvent e0 mid 0
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
-            print "================================================="
-            print $ pstate^.p_rtsState
-            print e0
-            print guiEvents
+            dbi <- foldM DB.insertEvent dbi guiEvents
             parseSingleEventLog dbi mid $ parseNextEventNull pstate'
 
 -- no more system events.
@@ -491,10 +486,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent e0 mid 0
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
-            print "================================================="
-            print $ pstate^.p_rtsState
-            print e0
-            print guiEvents
+            dbi <- foldM DB.insertEvent dbi guiEvents
             parseSingleEventLog dbi mid $ parseNextEventNull pstate'
 -- no more cap0 events.
 parseSingleEventLog dbi mid pstate@(ParserState
@@ -504,10 +496,7 @@ parseSingleEventLog dbi mid pstate@(ParserState
             let aEvent = AssignedEvent es mid (-1)
                 (newRTS, guiEvents) = handleEvents (pstate^.p_rtsState) aEvent
                 pstate' = set p_rtsState newRTS $ pstate
-            print "================================================="
-            print $ pstate^.p_rtsState
-            print es
-            print guiEvents
+            dbi <- foldM DB.insertEvent dbi guiEvents
             parseSingleEventLog dbi mid $ parseNextEventSystem pstate'
 -- no more events.
 parseSingleEventLog dbi mid pstate@(ParserState

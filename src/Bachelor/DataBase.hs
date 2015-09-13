@@ -119,14 +119,16 @@ insertThread dbi mid pid tid = do
 
 
 insertEvent :: DBInfo -> GUIEvent -> IO DBInfo
-insertEvent dbi (NewMachine mid)        = insertMachine dbi mid
-insertEvent dbi (NewProcess mid pid)    = insertProcess dbi mid pid
-insertEvent dbi (NewThread mid pid tid) = insertThread  dbi mid pid tid
-insertEvent dbi (GUIEvent mtpType start dur state) =
+insertEvent dbi g@(NewMachine mid)        = print dbi >> print g >> insertMachine dbi mid
+insertEvent dbi g@(NewProcess mid pid)    = print dbi >> print g >> insertProcess dbi mid pid
+insertEvent dbi g@(NewThread mid pid tid) = print dbi >> print g >> insertThread  dbi mid pid tid
+insertEvent dbi g@(GUIEvent mtpType start dur state) = do
+    print dbi
+    print g
     case mtpType of
-        Machine mid      -> insertMachineState dbi mid start dur state
-        Process mid pid  -> insertProcessState dbi mid pid start dur state
-        _                -> return dbi
+        Machine mid     -> insertMachineState dbi mid start dur state
+        Process mid pid -> insertProcessState dbi mid pid start dur state
+        Thread  mid tid -> insertThreadState  dbi mid tid start dur state
 
 
 insertMachineStateQuery :: Query
