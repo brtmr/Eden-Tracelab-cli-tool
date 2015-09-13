@@ -157,3 +157,17 @@ insertProcessState dbi mid pid start duration state = do
         (processKey, start, duration, stateToInt state)
     return dbi
 
+insertThreadStateQuery :: Query
+insertThreadStateQuery =
+    "Insert into thread_events(thread_id, starttime, duration, state)\
+    \values( ? , ? , ? , ? );"
+
+insertThreadState :: DBInfo -> MachineId -> ThreadId -> Timestamp -> Timestamp
+    -> RunState -> IO DBInfo
+insertThreadState dbi mid tid start duration state = do
+    let conn = db_connection dbi
+        threadKey = (db_threads dbi) M.! (mid,tid)
+    execute conn insertThreadStateQuery
+        (threadKey, start, duration, stateToInt state)
+    return dbi
+
