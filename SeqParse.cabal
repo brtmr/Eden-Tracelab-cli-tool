@@ -61,7 +61,6 @@ library
   other-modules:       Bachelor.SeqParse.PreParse
                        Bachelor.DataBase
                        Bachelor.Util
-                       Bachelor.TinyZipper
 
   -- LANGUAGE extensions used by modules in this package.
   -- other-extensions:

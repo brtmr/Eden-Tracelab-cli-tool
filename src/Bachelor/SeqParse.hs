@@ -15,7 +15,6 @@ import Data.Map.Lens
 import Data.Maybe
 import GHC.RTS.Events hiding (machine)
 import qualified Bachelor.DataBase as DB
-import qualified Bachelor.TinyZipper as TZ
 import qualified Bachelor.Util as U
 import qualified Data.Array.IArray as Array
 import qualified Data.Attoparsec.ByteString.Lazy as AL
@@ -438,19 +437,25 @@ run dir = do
     -- create a parserState for each eventLog file.
     pStates <- zip mids <$> mapM createParserState files
     -- create the multistate that encompasses all machines.
-    let mState = MultiParserState {
-        _machineTable = M.fromList pStates,
-        _con = dbi}
-    print mState
+    --let mState = MultiParserState {
+    --    _machineTable = M.fromList pStates,
+    --    _con = dbi}
     -- for testing purposes only: test the first machine
-    let m1 = fromJust $ (mState^.machineTable^.(at 2))
-    parseSingleEventLog dbi 2 m1
+    --let m1 = fromJust $ (mState^.machineTable^.(at 2))
+    dbi <- foldM handleMachine dbi pStates
+    return ()
+
+handleMachine :: DB.DBInfo -> (MachineId, ParserState) -> IO DB.DBInfo
+handleMachine dbi (mid,pstate) = do
+    print $ "Processing Machine no ." ++ (show mid)
+    dbi <- parseSingleEventLog dbi mid pstate
+    return dbi
 
 {-
  - This is the main function for parsing a single event log and storing
  - the events contained within into the database.
  - -}
-parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO()
+parseSingleEventLog :: DB.DBInfo -> MachineId -> ParserState -> IO DB.DBInfo
 -- event blocks need to be skipped without handling them.
 -- System EventBlock
 parseSingleEventLog dbi mid pstate@(ParserState
@@ -502,4 +507,4 @@ parseSingleEventLog dbi mid pstate@(ParserState
 parseSingleEventLog dbi mid pstate@(ParserState
     (bss,evs@Nothing)
     (bs0,ev0@Nothing)
-    rts pt) = return ()
+    rts pt) = return dbi
