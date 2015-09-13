@@ -79,7 +79,6 @@ library
                        lens,
                        array == 0.5.0.0,
                        postgresql-simple == 0.4.1.0,
-                       zip-archive,
                        directory == 1.2.1.0,
                        hspec
 
@@ -87,6 +86,27 @@ library
   hs-source-dirs:      src
 
   -- Base language which the package is written in.
+  default-language:    Haskell2010
+
+executable seqparse-run
+  ghc-options: -O2
+  hs-source-dirs: src
+  build-depends:       base >=4.7 && <4.9,
+                       binary,
+                       bytestring,
+                       ghc-events-parallel,
+                       containers >= 0.2 && < 0.6,
+                       unordered-containers,
+                       mtl,
+                       attoparsec,
+                       attoparsec-binary,
+                       lens,
+                       array == 0.5.0.0,
+                       postgresql-simple == 0.4.1.0,
+                       directory == 1.2.1.0,
+                       seqparse
+
+  main-is: Main.hs
   default-language:    Haskell2010
 
 test-suite spec
