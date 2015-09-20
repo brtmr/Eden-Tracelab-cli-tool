@@ -443,6 +443,7 @@ run dir = do
     -- for testing purposes only: test the first machine
     --let m1 = fromJust $ (mState^.machineTable^.(at 2))
     dbi <- foldM handleMachine dbi pStates
+    dbi <- finalize dbi
     return ()
 
 handleMachine :: DB.DBInfo -> (MachineId, ParserState) -> IO DB.DBInfo

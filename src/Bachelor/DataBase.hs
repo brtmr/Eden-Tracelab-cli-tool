@@ -6,6 +6,8 @@ module Bachelor.DataBase where
  - a database.
  - -}
 
+
+
 --instance IOEventData where
 
 import Bachelor.Types
@@ -13,6 +15,9 @@ import Database.PostgreSQL.Simple
 import GHC.RTS.Events
 import qualified Data.HashMap.Strict as M
 import Control.Applicative
+
+--the number of events to be commited at once
+bufferlimit = 10000
 
 myConnectInfo :: ConnectInfo
 myConnectInfo = defaultConnectInfo {
@@ -27,6 +32,9 @@ mkConnection = connect myConnectInfo
 -- threads within the current trace.
 
 data DBInfo = DBInfo {
+    db_threadbuffer  :: [(MachineId, ThreadId,  Timestamp, Timestamp, RunState)],
+    db_processbuffer :: [(MachineId, ProcessId, Timestamp, Timestamp, RunState)],
+    db_machinebuffer :: [(MachineId, Timestamp, Timestamp, RunState)],
     db_traceKey   :: Int,
     db_machines   :: M.HashMap MachineId Int,
     db_processes  :: M.HashMap (MachineId,ProcessId) Int,
@@ -59,6 +67,9 @@ createDBInfo file = do
         Only key -> do
             putStrLn $ show $ (key :: Int)
             return $ DBInfo {
+                db_processbuffer = [],
+                db_threadbuffer  = [],
+                db_machinebuffer = [],
                 db_traceKey   = key,
                 db_machines   = M.empty,
                 db_processes  = M.empty,
@@ -124,50 +135,68 @@ insertEvent dbi g@(NewProcess mid pid)    = insertProcess dbi mid pid
 insertEvent dbi g@(NewThread mid pid tid) = insertThread  dbi mid pid tid
 insertEvent dbi g@(GUIEvent mtpType start dur state) =
     case mtpType of
-        Machine mid     -> insertMachineState dbi mid start dur state
-        Process mid pid -> insertProcessState dbi mid pid start dur state
-        Thread  mid tid -> insertThreadState  dbi mid tid start dur state
+        Machine mid -> case ((length $ db_machinebuffer dbi) >= bufferlimit) of
+            True  -> insertMachineState dbi
+            False -> return dbi {
+                db_machinebuffer = (mid,start,dur,state) : db_machinebuffer dbi
+                }
+        Process mid pid -> case ((length $ db_processbuffer dbi) >= bufferlimit) of
+            True  -> insertProcessState dbi
+            False -> return dbi {
+                db_processbuffer = (mid,pid,start,dur,state) : db_processbuffer dbi
+                }
+        Thread  mid tid -> case ((length $ db_threadbuffer dbi) >= bufferlimit) of
+            True  -> insertThreadState dbi
+            False -> return dbi {
+                db_threadbuffer = (mid,tid,start,dur,state) : db_threadbuffer dbi
+                }
 
+finalize :: DBInfo -> IO DBInfo
+finalize dbi = do
+    dbi <- insertMachineState dbi
+    dbi <- insertProcessState dbi
+    dbi <- insertThreadState  dbi
+    return dbi
 
 insertMachineStateQuery :: Query
 insertMachineStateQuery =
     "Insert into machine_events(machine_id, starttime, duration, state)\
     \values( ? , ? , ? , ? );"
 
-insertMachineState :: DBInfo -> MachineId -> Timestamp -> Timestamp -> RunState
-    -> IO DBInfo
-insertMachineState dbi mid start duration state = do
+insertMachineState :: DBInfo -> IO DBInfo
+insertMachineState dbi = do
     let conn = db_connection dbi
-        machineKey = (db_machines dbi) M.! mid
-    execute conn insertMachineStateQuery
-        (machineKey, start, duration, stateToInt state)
-    return dbi
+        inlist = map (\(mid,start,duration,state) ->
+            ((db_machines dbi) M.! mid, start, duration, stateToInt state))
+                $ db_machinebuffer dbi
+    executeMany conn insertMachineStateQuery inlist
+    return dbi {db_machinebuffer = []}
 
 insertProcessStateQuery :: Query
 insertProcessStateQuery =
     "Insert into process_events(process_id, starttime, duration, state)\
     \values( ? , ? , ? , ? );"
 
-insertProcessState :: DBInfo -> MachineId -> ProcessId -> Timestamp -> Timestamp
-    -> RunState -> IO DBInfo
-insertProcessState dbi mid pid start duration state = do
+insertProcessState :: DBInfo -> IO DBInfo
+insertProcessState dbi = do
     let conn = db_connection dbi
-        processKey = (db_processes dbi) M.! (mid,pid)
-    execute conn insertProcessStateQuery
-        (processKey, start, duration, stateToInt state)
-    return dbi
+        inlist = map (\(mid,pid,start,duration,state) ->
+            ((db_processes dbi) M.! (mid,pid), start, duration, stateToInt state))
+                $ db_processbuffer dbi
+    executeMany conn insertProcessStateQuery inlist
+    return dbi {db_processbuffer = []}
 
 insertThreadStateQuery :: Query
 insertThreadStateQuery =
     "Insert into thread_events(thread_id, starttime, duration, state)\
     \values( ? , ? , ? , ? );"
 
-insertThreadState :: DBInfo -> MachineId -> ThreadId -> Timestamp -> Timestamp
-    -> RunState -> IO DBInfo
-insertThreadState dbi mid tid start duration state = do
+insertThreadState :: DBInfo -> IO DBInfo
+insertThreadState dbi = do
     let conn = db_connection dbi
-        threadKey = (db_threads dbi) M.! (mid,tid)
-    execute conn insertThreadStateQuery
-        (threadKey, start, duration, stateToInt state)
-    return dbi
+        inlist = map (\(mid,tid,start,duration,state) ->
+            ((db_threads dbi) M.! (mid,tid), start, duration, stateToInt state))
+                $ db_threadbuffer dbi
+    executeMany conn insertThreadStateQuery inlist
+    return dbi {db_threadbuffer = []}
 
