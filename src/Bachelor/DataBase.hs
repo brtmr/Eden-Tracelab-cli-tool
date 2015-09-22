@@ -59,13 +59,11 @@ insertTraceQuery :: Query
 insertTraceQuery = "Insert Into Traces (filename, creation_date)\
     \values( ? , now()) returning trace_id;"
 
-createDBInfo :: FilePath -> IO DBInfo
-createDBInfo file = do
-    conn <- mkConnection
+insertTrace :: Connection -> FilePath -> IO DBInfo
+insertTrace conn file = do
     traceKey <- head <$> query conn insertTraceQuery (Only file)
     case traceKey of
         Only key -> do
-            putStrLn $ show $ (key :: Int)
             return $ DBInfo {
                 db_processbuffer = [],
                 db_threadbuffer  = [],
@@ -136,17 +134,23 @@ insertEvent dbi g@(NewThread mid pid tid) = insertThread  dbi mid pid tid
 insertEvent dbi g@(GUIEvent mtpType start dur state) =
     case mtpType of
         Machine mid -> case ((length $ db_machinebuffer dbi) >= bufferlimit) of
-            True  -> insertMachineState dbi
+            True  -> do
+                putStrLn "inserting Machine events"
+                insertMachineState dbi
             False -> return dbi {
                 db_machinebuffer = (mid,start,dur,state) : db_machinebuffer dbi
                 }
         Process mid pid -> case ((length $ db_processbuffer dbi) >= bufferlimit) of
-            True  -> insertProcessState dbi
+            True  -> do
+                putStrLn "inserting Process events"
+                insertProcessState dbi
             False -> return dbi {
                 db_processbuffer = (mid,pid,start,dur,state) : db_processbuffer dbi
                 }
         Thread  mid tid -> case ((length $ db_threadbuffer dbi) >= bufferlimit) of
-            True  -> insertThreadState dbi
+            True  -> do
+                putStrLn "inserting Thread events"
+                insertThreadState dbi
             False -> return dbi {
                 db_threadbuffer = (mid,tid,start,dur,state) : db_threadbuffer dbi
                 }
