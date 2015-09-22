@@ -203,6 +203,8 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
             in (rts', mList [creationEvent, pEvent, mEvent])
         RunThread tid ->
             changeThreadState rts mid tid Running ts
+        WakeupThread tid _->
+            changeThreadState rts mid tid Running ts
         StopThread tid _ ->
             changeThreadState rts mid tid Blocked ts
         ThreadRunnable tid ->
@@ -433,7 +435,6 @@ run dir = do
         mids  = map extractNumber paths
     -- connect to the DataBase, and enter a new trace, with the current
     -- directory and time.
-    dbi <- DB.createDBInfo dir
     -- create a parserState for each eventLog file.
     pStates <- zip mids <$> mapM createParserState files
     -- create the multistate that encompasses all machines.
@@ -442,9 +443,12 @@ run dir = do
     --    _con = dbi}
     -- for testing purposes only: test the first machine
     --let m1 = fromJust $ (mState^.machineTable^.(at 2))
-    dbi <- foldM handleMachine dbi pStates
-    dbi <- finalize dbi
-    return ()
+    conn <- DB.mkConnection
+    PG.withTransaction conn $ do
+        dbi <- DB.insertTrace conn dir
+        dbi <- foldM handleMachine dbi pStates
+        dbi <- DB.finalize dbi
+        return ()
 
 handleMachine :: DB.DBInfo -> (MachineId, ParserState) -> IO DB.DBInfo
 handleMachine dbi (mid,pstate) = do

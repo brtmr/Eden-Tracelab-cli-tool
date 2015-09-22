@@ -1,6 +1,12 @@
 
 import qualified Bachelor.SeqParse as Parse
-
+import System.Environment ( getArgs )
 
 main :: IO()
-main = Parse.run "/home/basti/bachelor/hex_oeffnet/mergesort_larger/"
+main = do
+    args <- getArgs
+    if (length args /= 1)
+        then putStrLn "please provide a directory"
+        else
+            Parse.run $ head args
+
