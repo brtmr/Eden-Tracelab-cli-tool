@@ -13,6 +13,7 @@ import Control.Lens
 import Data.List
 import Data.Map.Lens
 import Data.Maybe
+import Debug.Trace
 import GHC.RTS.Events hiding (machine)
 import qualified Bachelor.DataBase as DB
 import qualified Bachelor.Util as U
@@ -24,6 +25,33 @@ import qualified Data.IntMap as IM
 import qualified Database.PostgreSQL.Simple as PG
 import qualified System.Directory as Dir
 import qualified System.IO as IO
+
+
+-- taken from RTSEventsParser.hs
+instance Eq ThreadStopStatus where
+    NoStatus       == NoStatus       = True
+    HeapOverflow   == HeapOverflow   = True
+    StackOverflow  == StackOverflow  = True
+    ThreadYielding == ThreadYielding = True
+    ThreadBlocked  == ThreadBlocked  = True
+    ThreadFinished == ThreadFinished = True
+    ForeignCall    == ForeignCall    = True
+    BlockedOnMVar  == BlockedOnMVar  = True
+    BlockedOnMVarRead  == BlockedOnMVarRead  = True
+    -- since GHC-7.8.2/ghc-events-0.4.3.1
+    BlockedOnBlackHole == BlockedOnBlackHole = True
+    BlockedOnRead  == BlockedOnRead  = True
+    BlockedOnWrite == BlockedOnWrite = True
+    BlockedOnDelay == BlockedOnDelay = True
+    BlockedOnSTM   == BlockedOnSTM   = True
+    BlockedOnDoProc == BlockedOnDoProc = True
+    BlockedOnCCall == BlockedOnCCall = True
+    BlockedOnCCall_NoUnblockExc == BlockedOnCCall_NoUnblockExc = True
+    BlockedOnMsgThrowTo == BlockedOnMsgThrowTo = True
+    ThreadMigrating == ThreadMigrating = True
+    BlockedOnMsgGlobalise == BlockedOnMsgGlobalise = True
+    (BlockedOnBlackHoleOwnedBy _) == (BlockedOnBlackHoleOwnedBy _) = True
+    _ == _  = False
 
 -- The Parsing state for a specific capability. It contains the Lazy ByteString
 -- consumed up to the current event, and the last parsed Event.
@@ -161,6 +189,7 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
                 _m_pRunning  = 0,
                 _m_pRunnable = 0,
                 _m_pBlocked  = 0,
+                _m_pIdle     = 0,
                 _m_pTotal    = 0
                 }
                 creationEvent = NewMachine mid
@@ -205,13 +234,31 @@ handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
             changeThreadState rts mid tid Running ts
         WakeupThread tid _->
             changeThreadState rts mid tid Running ts
-        StopThread tid _ ->
-            changeThreadState rts mid tid Blocked ts
+        --the StopThread event has several stopreasons, some of which will only
+        --suspend the thread, one of which will kill it.
+        StopThread tid reason ->
+            if reason == ThreadFinished
+                then do
+                    killThread rts mid tid ts
+                    --changeThreadState rts mid tid Blocked ts
+                else if reason `elem` blockList
+                    then do
+                        changeThreadState rts mid tid Blocked ts
+                    else do
+                        changeThreadState rts mid tid Runnable ts
+        {-
+         - not observed, because EdenTV also does not observe it.
         ThreadRunnable tid ->
             changeThreadState rts mid tid Runnable ts
+            -}
         _ -> (rts,[])
 
 
+--taken directly from RTSEventsParser.hs, the list of reasons to block
+--a thread
+blockList = [ThreadBlocked, BlockedOnMVar, BlockedOnBlackHole, BlockedOnDelay,
+    BlockedOnSTM, BlockedOnDoProc, BlockedOnMsgThrowTo, ThreadMigrating,
+    BlockedOnMsgGlobalise, BlockedOnBlackHoleOwnedBy 0]
 {-
  - We often have to deal with lists of type [Maybe GUIEvent], and want to
  - filter the actual events.
@@ -243,7 +290,39 @@ changeThreadState rts mid tid state ts =
             rts' = set rts_machine newMachine $
                    set (rts_threads.(at tid))   (Just newThread)  $
                    set (rts_processes.(at pid)) (Just newProcess) $ rts
-        in (rts', mList [tEvent, pEvent, mEvent])
+            rts'' = if ( ts>1849500000 && ts<1850000000 )
+                        then trace
+                            ("OLD: " ++ (show $ rts^.rts_machine) ++ "\nNEW: " ++ (show newMachine)) rts'
+                        else rts'
+        in (rts'', mList [tEvent, pEvent, mEvent])
+    --ignore 'homeless' threads.
+    else (rts,[])
+
+killThread :: RTSState -> MachineId -> ThreadId -> Timestamp
+                -> (RTSState, [GUIEvent])
+killThread rts mid tid ts =
+    if M.member tid (rts^.rts_threads)
+        then let
+            oldThread           = (rts^.rts_threads) M.! tid
+            oldState            = oldThread^.t_state
+            pid                 = oldThread^.t_parent
+            oldProcess          = (rts^.rts_processes) M.! pid
+            tEvent              = GUIEvent {
+                mtpType   = Thread mid tid,
+                startTime = oldThread^.t_timestamp,
+                duration  = ts - oldThread^.t_timestamp,
+                state     = oldState }
+            (newProcess,pEvent) = updateThreadCountAndProcessState
+                mid pid ts oldProcess (Just oldState) Nothing
+            oldProcessState     = oldProcess^.p_state
+            newProcessState     = newProcess^.p_state
+            (newMachine,mEvent) = updateProcessCountAndMachineState mid ts
+                (rts^.rts_machine) (Just oldProcessState)
+                (Just newProcessState)
+            rts' = set rts_machine newMachine $
+                   set (rts_threads.(at tid)) Nothing$
+                   set (rts_processes.(at pid)) (Just newProcess) $ rts
+        in  (rts', tEvent : mList [pEvent, mEvent])
     --ignore 'homeless' threads.
     else (rts,[])
 
@@ -325,9 +404,9 @@ updateProcessCount :: MachineState -> (Maybe RunState) -> (Maybe RunState)
                       -> MachineState
 updateProcessCount m oldState newState
     | oldState == newState = m
-    | (oldState == Just Idle) || (newState == Just Idle) = m
     | otherwise = let m' = case oldState of
                         --decrement the old state counter, or insert the event.
+                        (Just Idle)     -> m_pIdle     %~ decr $ m
                         (Just Running)  -> m_pRunning  %~ decr $ m
                         (Just Blocked)  -> m_pBlocked  %~ decr $ m
                         (Just Runnable) -> m_pRunnable %~ decr $ m
@@ -335,6 +414,7 @@ updateProcessCount m oldState newState
                       m'' = case newState of
                        --increment the new state counter, or remove the event
                        --from the total
+                        (Just Idle)     -> m_pIdle     %~ incr $ m'
                         (Just Running)  -> m_pRunning  %~ incr $ m'
                         (Just Blocked)  -> m_pBlocked  %~ incr $ m'
                         (Just Runnable) -> m_pRunnable %~ incr $ m'
@@ -345,15 +425,18 @@ updateProcessCount m oldState newState
  - sets the Machine State according to the current Process count.
  - -}
 setMachineState :: MachineState -> MachineState
-    -- no Processess Assigned, this Machine is idle
 setMachineState m
+    -- no Processess Assigned, this Machine is idle
                     | _m_pTotal m == 0             = m {_m_state = Idle}
+    -- all Processes Idle, this machine is idle
+                    | _m_pTotal m == _m_pIdle m    = m {_m_state = Idle}
     --if a single process is running, this Machine will be running.
                     | _m_pRunning m >0             = m {_m_state = Running}
     --if all Processes are blocked, this Machine is blocked.
                     | _m_pBlocked m == _m_pTotal m = m {_m_state = Blocked}
     --if at least one Process is Runnable, this Machine is runnable.
                     | _m_pRunnable m >0             = m {_m_state = Runnable}
+                    | otherwise = error $ show m
 
 {-
  - takes a state transition within a thread and the parent process,

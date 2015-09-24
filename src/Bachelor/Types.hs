@@ -36,6 +36,7 @@ data MachineState = MachineState {
     _m_pRunning  :: Int,
     _m_pRunnable :: Int,
     _m_pBlocked  :: Int,
+    _m_pIdle     :: Int,
     _m_pTotal    :: Int
     } | PreMachine deriving Show
 

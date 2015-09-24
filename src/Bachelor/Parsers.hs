@@ -147,9 +147,7 @@ knownParsers = [ (0, (\cap timestamp -> do -- CreateThread
                         blockreason <- U.parseW16
                         i <- U.parseW32
                         return $  Event timestamp (StopThread threadId
-                                (if (blockreason==8)
-                                    then (BlockedOnBlackHoleOwnedBy i)
-                                    else (mkStopStatus blockreason))))),
+                                    (mkStopStatus blockreason)))),
                 (3, (\cap timestamp -> do -- ThreadRunnable
                         threadId <- U.parseW32
                         return $  Event timestamp (ThreadRunnable threadId))),
@@ -416,6 +414,8 @@ knownParsers = [ (0, (\cap timestamp -> do -- CreateThread
 {-blatantly copied from GHC.RTS.Eventypes: -}
 type RawThreadStopStatus = Word16
 
+--this is mkStopStatus782, couse that is the latest iteration of
+--the compiler.
 mkStopStatus :: RawThreadStopStatus -> ThreadStopStatus
 mkStopStatus n = case n of
     0  ->  NoStatus
@@ -426,19 +426,19 @@ mkStopStatus n = case n of
     5  ->  ThreadFinished
     6  ->  ForeignCall
     7  ->  BlockedOnMVar
-    8  ->  BlockedOnBlackHole
-    9  ->  BlockedOnRead
-    10 ->  BlockedOnWrite
-    11 ->  BlockedOnDelay
-    12 ->  BlockedOnSTM
-    13 ->  BlockedOnDoProc
-    14 ->  BlockedOnCCall
-    15 ->  BlockedOnCCall_NoUnblockExc
-    16 ->  BlockedOnMsgThrowTo
-    17 ->  ThreadMigrating
-    18 ->  BlockedOnMsgGlobalise
-    19 ->  NoStatus -- yeuch... this one does not actually exist in GHC eventlogs
-    20 ->  BlockedOnMVarRead -- sincRawThreadStopStatustatus -> ThreadStopStatus
+    8  ->  BlockedOnMVarRead -- in GHC-7.8.2
+    9  ->  BlockedOnBlackHole
+    10 ->  BlockedOnRead
+    11 ->  BlockedOnWrite
+    12 ->  BlockedOnDelay
+    13 ->  BlockedOnSTM
+    14 ->  BlockedOnDoProc
+    15 ->  BlockedOnCCall
+    16 ->  BlockedOnCCall_NoUnblockExc
+    17 ->  BlockedOnMsgThrowTo
+    18 ->  ThreadMigrating
+    19 ->  BlockedOnMsgGlobalise
+    _  ->  error "mkStat"
 
 mkCapsetType :: Word16 -> CapsetType
 mkCapsetType n = case n of

@@ -17,14 +17,17 @@ import qualified Data.HashMap.Strict as M
 import Control.Applicative
 
 --the number of events to be commited at once
-bufferlimit = 10000
+bufferlimit = 1000
 
 myConnectInfo :: ConnectInfo
 myConnectInfo = defaultConnectInfo {
     connectPassword = "bohCh0mu"
     }
 
-mkConnection = connect myConnectInfo
+mkConnection = do
+    conn <- connect myConnectInfo
+    _ <- execute_ conn "SET SESSION synchronous_commit TO off"
+    return conn
 
 -- the information necessary for entering events into the database.
 -- because the database should be able to contain multiple traces,
@@ -135,21 +138,21 @@ insertEvent dbi g@(GUIEvent mtpType start dur state) =
     case mtpType of
         Machine mid -> case ((length $ db_machinebuffer dbi) >= bufferlimit) of
             True  -> do
-                putStrLn "inserting Machine events"
+                --putStrLn "inserting Machine events"
                 insertMachineState dbi
             False -> return dbi {
                 db_machinebuffer = (mid,start,dur,state) : db_machinebuffer dbi
                 }
         Process mid pid -> case ((length $ db_processbuffer dbi) >= bufferlimit) of
             True  -> do
-                putStrLn "inserting Process events"
+                --putStrLn "inserting Process events"
                 insertProcessState dbi
             False -> return dbi {
                 db_processbuffer = (mid,pid,start,dur,state) : db_processbuffer dbi
                 }
         Thread  mid tid -> case ((length $ db_threadbuffer dbi) >= bufferlimit) of
             True  -> do
-                putStrLn "inserting Thread events"
+                --putStrLn "inserting Thread events"
                 insertThreadState dbi
             False -> return dbi {
                 db_threadbuffer = (mid,tid,start,dur,state) : db_threadbuffer dbi
