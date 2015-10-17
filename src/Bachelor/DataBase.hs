@@ -15,17 +15,14 @@ import Database.PostgreSQL.Simple
 import GHC.RTS.Events
 import qualified Data.HashMap.Strict as M
 import Control.Applicative
+import qualified Data.ByteString as B
 
 --the number of events to be commited at once
 bufferlimit = 1000
 
-myConnectInfo :: ConnectInfo
-myConnectInfo = defaultConnectInfo {
-    connectPassword = "bohCh0mu"
-    }
-
 mkConnection = do
-    conn <- connect myConnectInfo
+    connectionString <- B.readFile "pq.conf"
+    conn <- connectPostgreSQL connectionString
     _ <- execute_ conn "SET SESSION synchronous_commit TO off"
     return conn
 
