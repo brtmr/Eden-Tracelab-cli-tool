@@ -28,7 +28,7 @@ location to ghc.
 ## Usage 
 
 Before starting the program, create a postgres database with the required schema. 
-The according sql can be found [here](). Put the pq connection string specifying the database 
+The according sql can be found [here](https://github.com/brtmr/Eden-Tracelab-Web/blob/master/sql/CREATE_TABLES.sql). Put the pq connection string specifying the database 
 credentials in a configuration file called pq.conf.
 
 Then, extract the *.parevents file you want to analyze into a directory, and execute the program:
