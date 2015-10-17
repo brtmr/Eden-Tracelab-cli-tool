@@ -170,12 +170,12 @@ data AssignedEvent = AssignedEvent {
 
 $(makeLenses ''AssignedEvent)
 
-type HandlerType = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
+type Handler = RTSState -> AssignedEvent -> (RTSState,[GUIEvent])
 {-
  - This is the main function to handle events,
  - manipulate the rts state, and generate GUI Events.
  - -}
-handleEvents :: HandlerType
+handleEvents :: Handler
 handleEvents rts aEvent@(AssignedEvent event@(Event ts spec) mid cap) =
     case spec of
         KillProcess pid ->
@@ -290,11 +290,7 @@ changeThreadState rts mid tid state ts =
             rts' = set rts_machine newMachine $
                    set (rts_threads.(at tid))   (Just newThread)  $
                    set (rts_processes.(at pid)) (Just newProcess) $ rts
-            rts'' = if ( ts>1849500000 && ts<1850000000 )
-                        then trace
-                            ("OLD: " ++ (show $ rts^.rts_machine) ++ "\nNEW: " ++ (show newMachine)) rts'
-                        else rts'
-        in (rts'', mList [tEvent, pEvent, mEvent])
+        in (rts', mList [tEvent, pEvent, mEvent])
     --ignore 'homeless' threads.
     else (rts,[])
 
@@ -436,7 +432,9 @@ setMachineState m
                     | _m_pBlocked m == _m_pTotal m = m {_m_state = Blocked}
     --if at least one Process is Runnable, this Machine is runnable.
                     | _m_pRunnable m >0             = m {_m_state = Runnable}
-                    | otherwise = error $ show m
+    --there are blocked and idle processes. mark the machine as blocked.
+                    | _m_pBlocked m >0 && _m_pIdle m >0 = m {_m_state = Blocked}
+                    | otherwise = error $ "could not determine machine state" ++ show m
 
 {-
  - takes a state transition within a thread and the parent process,
