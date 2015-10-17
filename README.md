@@ -8,11 +8,13 @@ http://www.mathematik.uni-marburg.de/~eden/?content=down_eden&navi=down
 
 The parser and web-backend can be compiled with cabal.
 Both cabal projects should be compiled within a sandbox, to avoid cabal hell.
-``
- cabal configure 
- cabal install --dependencies-only
- cabal build
-``
+Configure the project, install dependencies and build using:
+`` cabal configure ``
+
+`` cabal install --dependencies-only ``
+
+`` cabal build``
+
 For the parser to succesfully compile and run, libfastconvert (which is 
 located in parser/lib) has to be on the include path. Compile it using 
 make, and place it on your include path (e.g /usr/include), or pass its 
