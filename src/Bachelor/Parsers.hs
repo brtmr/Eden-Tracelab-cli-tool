@@ -147,7 +147,12 @@ knownParsers = [ (0, (\cap timestamp -> do -- CreateThread
                         blockreason <- U.parseW16
                         i <- U.parseW32
                         return $  Event timestamp (StopThread threadId
-                                    (mkStopStatus blockreason)))),
+                                  (if (blockreason > maxThreadStopStatus782)
+                                    then NoStatus
+                                    else if blockreason==9
+                                        then BlockedOnBlackHoleOwnedBy i
+                                        else mkStopStatus782 blockreason)
+                                    ))),
                 (3, (\cap timestamp -> do -- ThreadRunnable
                         threadId <- U.parseW32
                         return $  Event timestamp (ThreadRunnable threadId))),
@@ -416,8 +421,10 @@ type RawThreadStopStatus = Word16
 
 --this is mkStopStatus782, couse that is the latest iteration of
 --the compiler.
-mkStopStatus :: RawThreadStopStatus -> ThreadStopStatus
-mkStopStatus n = case n of
+--taken from ghc-events-parallel
+maxThreadStopStatus782    = 19 -- need to distinguish three cases
+mkStopStatus782 :: RawThreadStopStatus -> ThreadStopStatus
+mkStopStatus782 n = case n of
     0  ->  NoStatus
     1  ->  HeapOverflow
     2  ->  StackOverflow
