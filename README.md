@@ -1,6 +1,11 @@
 # seqparse - Command line tool for Eden-TraceLab
 
-## Installation:
+## About 
+
+The command-line tool for Eden-Tracelab as documented in my 
+[Bachelor thesis](http://brtmr.de/assets/files/bachelor_cs.pdf).
+
+## Installation
 
 Eden-Tracelab is developed to work with the latest Eden compiler (September
 2015) which is available [here](http://www.mathematik.uni-marburg.de/~eden/?content=down_eden&navi=down)
